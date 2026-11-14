@@ -47,6 +47,7 @@ def run_systems(r, gold, gen_llm, judge, names=None):
                           "answer": res["answer"], "refused": res["refused"], "correct": corr["score"], "judge_reason": corr["reason"],
                           "faithfulness": faith["score"], **cit, "tokens": res["tokens"], "latency_ms": res["latency_ms"], "steps": res["steps"],
                           "loops": res["loops"], "tool_calls": res["tool_calls"], "terminated": res["terminated"], "degraded": res["degraded"],
+                          "llm_error": res.get("llm_error", ""), "trace": [f"{t['node']}: {t['summary'][:160]}" for t in res["trace"]],
                           "n_citations": len(res["citations"])})
         print(f"[eval] {name} done")
     return per_q
@@ -117,7 +118,7 @@ def tables(abl, n_ans, S, per_q, meta, gold_n):
                ("Cited text contains answer (%)", "cited_contains_answer", pc), ("Refusal precision (%)", "refusal_precision", pc),
                ("Refusal recall (%)", "refusal_recall", pc), ("False refusals (count)", "false_refusals", lambda x: str(x)),
                ("Avg steps / question", "avg_steps", lambda x: f"{x:.1f}"), ("Tool-call success (%)", "tool_success", pc),
-               ("Loop termination (%)", "termination", pc), ("Latency p50 (ms)", "p50_ms", lambda x: f"{x:.0f}"),
+               ("Loop termination (%)", "termination", pc), ("Degraded answers (LLM fell back to rules)", "degraded", lambda x: str(x)), ("Latency p50 (ms)", "p50_ms", lambda x: f"{x:.0f}"),
                ("Latency p95 (ms)", "p95_ms", lambda x: f"{x:.0f}"), ("Tokens / query (est.)", "tokens", lambda x: f"{x:.0f}")]
     for label, key, f in rowdefs:
         vals = [S[s][key] for s in names]

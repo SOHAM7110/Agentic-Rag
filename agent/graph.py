@@ -69,8 +69,9 @@ class Agent:
             if not json_mode: return r.text
             data = parse_json(r.text)
             if data is not None: return data
-        except LLMError:
-            pass
+            st["llm_error"] = f"unparseable JSON: {r.text[:200]!r}"
+        except LLMError as e:
+            st["llm_error"] = str(e)[:300]
         st["degraded"] = True
         return heuristic()
 
@@ -395,5 +396,5 @@ class Agent:
                 "citations": cites, "trace": st.get("trace", []), "tokens": st.get("tokens", 0),
                 "latency_ms": round((time.perf_counter() - t0) * 1000, 1), "steps": len(st.get("trace", [])),
                 "loops": st.get("loops", 0), "tool_calls": [{"tool": r["tool"], "ok": r["ok"]} for r in tr],
-                "terminated": terminated and st.get("loops", 0) <= MAX_LOOPS, "degraded": bool(st.get("degraded")),
+                "terminated": terminated and st.get("loops", 0) <= MAX_LOOPS, "degraded": bool(st.get("degraded")), "llm_error": st.get("llm_error", ""),
                 "retrieved": [c for c in st.get("passages", [])], "engine": ENGINE}

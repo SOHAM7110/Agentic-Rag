@@ -1,7 +1,7 @@
 """OpenAI-compatible chat client (Groq, Hugging Face Inference Providers, Ollama, OpenAI) using only the stdlib,
 with retry/backoff on 429/5xx and a SQLite response cache (so reruns of `make eval` are free and fast)."""
 from __future__ import annotations
-import hashlib, json, os, sqlite3, time, urllib.error, urllib.request
+import hashlib, json, os, re, sqlite3, time, urllib.error, urllib.request
 from config import CACHE_PATH, LLM_MIN_INTERVAL
 from .base import LLM, LLMError, LLMResult
 
@@ -55,6 +55,11 @@ class OpenAICompatLLM(LLM):
                 "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}]}
         if json_mode:
             body["response_format"] = {"type": "json_object"}
+        if "gpt-oss" in self.model.lower():
+            # reasoning model: hidden thinking tokens count against max_tokens, so ask for little thinking and leave room
+            body["reasoning_effort"] = "low"
+            body["max_tokens"] = max(max_tokens, 1500)
+        optional = ("reasoning_effort", "response_format")      # dropped once if the API rejects them (HTTP 400)
         key = hashlib.sha256(json.dumps(body, sort_keys=True).encode()).hexdigest()
         if self.cache and (hit := self.cache.get(key)):
             return LLMResult(hit["text"], hit["in"], hit["out"], cached=True)
@@ -63,20 +68,28 @@ class OpenAICompatLLM(LLM):
             try:
                 _throttle()
                 req = urllib.request.Request(self.base + "/chat/completions", data=json.dumps(body).encode(),
-                                             headers={"Content-Type": "application/json", "Authorization": f"Bearer {self.api_key}"})
-                with urllib.request.urlopen(req, timeout=60) as r:
+                                             headers={"Content-Type": "application/json", "Accept": "application/json",
+                                                      "Authorization": f"Bearer {self.api_key}",
+                                                      # Cloudflare (in front of Groq/HF) blocks urllib's default UA with HTTP 403 / error 1010
+                                                      "User-Agent": "agentic-rag/1.0 (+python)"})
+                with urllib.request.urlopen(req, timeout=90) as r:
                     d = json.loads(r.read())
-                text = d["choices"][0]["message"]["content"] or ""
+                text = d["choices"][0]["message"].get("content") or ""
+                text = re.sub(r"<think>.*?</think>", "", text, flags=re.S).strip()   # some reasoning models inline their thoughts
                 u = d.get("usage", {})
                 res = LLMResult(text, u.get("prompt_tokens", (len(system) + len(user)) // 4), u.get("completion_tokens", len(text) // 4))
-                if self.cache: self.cache.put(key, {"text": text, "in": res.in_tokens, "out": res.out_tokens})
+                if self.cache and text: self.cache.put(key, {"text": text, "in": res.in_tokens, "out": res.out_tokens})
                 return res
             except urllib.error.HTTPError as e:
                 last = e
+                detail = e.read()[:300]
                 if e.code in (429, 500, 502, 503, 504):
                     wait = float(e.headers.get("retry-after", 0) or 0) or 2 ** attempt
                     time.sleep(min(wait, 65)); continue
-                raise LLMError(f"HTTP {e.code}: {e.read()[:200]!r}")
+                if e.code == 400 and any(k in body for k in optional):
+                    for k in optional: body.pop(k, None)             # model doesn't accept these options: retry plain
+                    continue
+                raise LLMError(f"HTTP {e.code}: {detail!r}")
             except Exception as e:  # network error / timeout
                 last = e; time.sleep(2 ** attempt)
         raise LLMError(f"gave up after {self.retries} attempts: {last}")
