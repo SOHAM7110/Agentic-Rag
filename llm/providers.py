@@ -39,7 +39,7 @@ def _throttle():
 
 
 class OpenAICompatLLM(LLM):
-    def __init__(self, provider: str, model: str = "", retries: int = 4, use_cache: bool = True):
+    def __init__(self, provider: str, model: str = "", retries: int = 6, use_cache: bool = True):
         cfg = PROVIDERS[provider]
         self.base, self.key_env = cfg["url"], cfg["key"]
         self.model = model or cfg["model"]
@@ -75,7 +75,7 @@ class OpenAICompatLLM(LLM):
                 last = e
                 if e.code in (429, 500, 502, 503, 504):
                     wait = float(e.headers.get("retry-after", 0) or 0) or 2 ** attempt
-                    time.sleep(min(wait, 20)); continue
+                    time.sleep(min(wait, 65)); continue
                 raise LLMError(f"HTTP {e.code}: {e.read()[:200]!r}")
             except Exception as e:  # network error / timeout
                 last = e; time.sleep(2 ** attempt)

@@ -1,8 +1,22 @@
-"""Central configuration. Everything is overridable through environment variables."""
+"""Central configuration. Everything is overridable through environment variables (or a .env file next to this file)."""
 import os
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
+
+
+def _load_dotenv(path: Path = ROOT / ".env"):
+    """Minimal .env reader (KEY=value per line, # comments). Real environment variables win."""
+    if not path.exists():
+        return
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if line and not line.startswith("#") and "=" in line:
+            k, v = line.split("=", 1)
+            os.environ.setdefault(k.strip(), v.strip().strip('"').strip("'"))
+
+
+_load_dotenv()
 PDF_DIR = Path(os.getenv("PDF_DIR", ROOT / "data" / "pdfs"))
 INDEX_DIR = Path(os.getenv("INDEX_DIR", ROOT / "data" / "index"))
 RESULTS_DIR = ROOT / "results"
