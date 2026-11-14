@@ -21,7 +21,7 @@ If the question needs no calculation or the passages lack a needed number, retur
 
 ANSWER_SYSTEM = """You answer questions strictly from the numbered context passages.
 Rules:
-1. Every sentence that states a fact MUST end with its supporting passage number(s) in square brackets, e.g. [2] or [1][3].
+1. Every sentence that states a fact MUST end with its supporting passage number(s) in plain ASCII square brackets, exactly like [2] or [1][3]. Never use other bracket styles (no 【2】, no (Passage 2), no footnotes).
 2. Use only information in the passages or the tool results. Never use outside knowledge.
 3. If the passages do not contain the answer, reply with exactly: INSUFFICIENT_EVIDENCE
 4. If the evidence is partial or ambiguous, say so explicitly ("The documents only state ...").

@@ -175,5 +175,24 @@ def claim_support(claim: str, passages: list[str], inputs: list[str] | None = No
     return sum(t in ptoks for t in ctoks) / len(ctoks)
 
 
+# [1] [1,2] [1][2] but also fullwidth ［1］, lenticular 【1】, "[Passage 1]", "[Passages 1, 2]", "[1†L5-L9]" style tails
+CITE_RE = re.compile(r"\s*[\[\uff3b\u3010]\s*(?:passages?\s*)?(\d+(?:\s*[,;\u2013-]\s*(?:passages?\s*)?\d+)*)[^\]\uff3d\u3011]{0,20}[\]\uff3d\u3011]", re.I)
+
+
+def parse_cites(text: str) -> list[int]:
+    nums = []
+    for m in CITE_RE.finditer(text):
+        nums += [int(n) for n in re.findall(r"\d+", m.group(1))]
+    return sorted(set(nums))
+
+
 def strip_cites(text: str) -> str:
-    return re.sub(r"\s*\[\d+(?:,\s*\d+)*\]", "", text).strip()
+    return CITE_RE.sub("", text).strip()
+
+
+def content_overlap(claim: str, passage: str) -> float:
+    """Share of the claim's non-numeric content words found in the passage (numbers may be *computed*, so ignored)."""
+    ct = {t for t in tokenize(claim) if not t.isdigit() and t not in GENERIC}
+    if not ct: return 0.0
+    pt = set(tokenize(passage))
+    return sum(t in pt for t in ct) / len(ct)

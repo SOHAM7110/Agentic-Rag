@@ -257,7 +257,7 @@ class Agent:
         num = {c["id"]: i for i, c in enumerate(passages, 1)}
         tools_ok = [r for r in st["tool_results"] if r["ok"]]
         refuse = (not st["sufficient"]) or not passages
-        claims: list[dict] = []
+        claims: list[dict] = []; attributed = 0
         if not refuse:
             if self.llm.offline:
                 claims = self._compose_offline(st, passages, num, tools_ok)
@@ -266,7 +266,9 @@ class Agent:
                 user = f"Question: {st['question']}\n\nPassages:\n{P.format_passages(passages)}\n\n{tool_txt}"
                 txt = self._llm(st, P.ANSWER_SYSTEM, user, lambda: "INSUFFICIENT_EVIDENCE", json_mode=False)
                 if "INSUFFICIENT_EVIDENCE" in txt: refuse = True
-                else: claims = self._claims_from_text(txt)
+                else:
+                    claims = self._claims_from_text(txt)
+                    attributed = self._attribute(claims, passages)
             if not claims: refuse = True
         if refuse:
             reason = st.get("reason", "")
@@ -275,18 +277,27 @@ class Agent:
                     "trace": self._trace(st, "answer", "refused: evidence insufficient", t0)}
         text = " ".join(c["text"] + "".join(f"[{n}]" for n in c["cites"]) for c in claims)
         return {"answer": text, "claims": claims, "refused": False, "passages": [c["id"] for c in passages],
-                "trace": self._trace(st, "answer", f"{len(claims)} claim(s), {len({n for c in claims for n in c['cites']})} citation(s)", t0, answer=text)}
+                "trace": self._trace(st, "answer", f"{len(claims)} claim(s), {len({n for c in claims for n in c['cites']})} citation(s)" + (f" ({attributed} attributed post-hoc: model gave no [n] markers)" if attributed else ""), t0, answer=text)}
 
     def _claims_from_text(self, txt: str) -> list[dict]:
         claims = []
-        for s in re.split(r"(?<=[.!?\]])\s+(?=[A-Z0-9])", txt.strip()):
-            cites = sorted({int(n) for grp in re.findall(r"\[(\d+(?:,\s*\d+)*)\]", s) for n in re.split(r",\s*", grp)})
-            claims.append({"text": H.strip_cites(s), "cites": cites, "computed": False})
+        for s in re.split(r"(?<=[.!?\]\uff3d\u3011])\s+(?=[A-Z0-9])", txt.strip()):
+            claims.append({"text": H.strip_cites(s), "cites": H.parse_cites(s), "computed": False})
         claims = [c for c in claims if c["text"]]
         allc = sorted({n for c in claims for n in c["cites"]})
         for c in claims:                      # models often cite once per paragraph: inherit rather than drop the claim
             if not c["cites"] and allc: c["cites"] = allc
         return claims
+
+    def _attribute(self, claims: list[dict], passages: list[dict]) -> int:
+        """If the model gave no citation at all, attach each claim to the passages that best support it (lexical overlap).
+        The verifier still has the last word, so an unsupported claim is dropped, not rescued."""
+        n = 0
+        for c in claims:
+            if c["cites"]: continue
+            sc = sorted(((H.content_overlap(c["text"], ctx_text(p)), i) for i, p in enumerate(passages, 1)), reverse=True)
+            c["cites"] = sorted(i for s, i in sc[:2] if s >= 0.3); c["attributed"] = bool(c["cites"]); n += bool(c["cites"])
+        return n
 
     def _compose_offline(self, st, passages, num, tools_ok) -> list[dict]:
         q, plan = st["question"], st["plan"]

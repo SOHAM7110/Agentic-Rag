@@ -2,7 +2,7 @@
 with retry/backoff on 429/5xx and a SQLite response cache (so reruns of `make eval` are free and fast)."""
 from __future__ import annotations
 import hashlib, json, os, re, sqlite3, time, urllib.error, urllib.request
-from config import CACHE_PATH, LLM_MIN_INTERVAL
+from config import CACHE_PATH, LLM_MIN_INTERVAL, LLM_REASONING_EFFORT
 from .base import LLM, LLMError, LLMResult
 
 PROVIDERS = {
@@ -57,7 +57,7 @@ class OpenAICompatLLM(LLM):
             body["response_format"] = {"type": "json_object"}
         if "gpt-oss" in self.model.lower():
             # reasoning model: hidden thinking tokens count against max_tokens, so ask for little thinking and leave room
-            body["reasoning_effort"] = "low"
+            body["reasoning_effort"] = LLM_REASONING_EFFORT
             body["max_tokens"] = max(max_tokens, 1500)
         optional = ("reasoning_effort", "response_format")      # dropped once if the API rejects them (HTTP 400)
         key = hashlib.sha256(json.dumps(body, sort_keys=True).encode()).hexdigest()

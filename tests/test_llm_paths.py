@@ -51,6 +51,20 @@ def test_numeric_uses_calculator():
     assert any(c["tool"] == "calculator" and c["ok"] for c in r["tool_calls"]) and not r["refused"]
 
 
+def test_fullwidth_and_passage_style_citations_are_parsed():
+    from agent import heuristics as H
+    assert H.parse_cites("A \u30101\u3011 and B [Passage 2] and C [1, 3] and D \uff3b4\uff3d.") == [1, 2, 3, 4]
+    assert H.strip_cites("Limit is 20 percent \u30101\u3011.") == "Limit is 20 percent."
+    r = _agent(FakeLLM(answer="The limit is 20 percent \u30101\u3011.")).run("What is the single counterparty exposure limit?")
+    assert not r["refused"] and r["citations"]
+
+
+def test_uncited_answer_is_attributed_then_verified():
+    r = _agent(FakeLLM(answer="The single counterparty exposure limit is a percent of the eligible capital base.")).run("What is the single counterparty exposure limit?")
+    assert not r["refused"] and r["citations"]
+    assert any("attributed" in t["summary"] for t in r["trace"] if t["node"] == "answer")
+
+
 def test_model_can_refuse():
     r = _agent(FakeLLM(answer="INSUFFICIENT_EVIDENCE")).run("What is the crypto exposure limit?")
     assert r["refused"] and not r["citations"]
