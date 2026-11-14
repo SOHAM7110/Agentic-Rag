@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+data/index/
+data/llm_cache.sqlite
+results/query_log.jsonl
+.env
+.venv/

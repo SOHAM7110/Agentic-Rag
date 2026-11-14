@@ -1,0 +1,16 @@
+# --- core (the project degrades gracefully if the heavy ones are missing) ---
+numpy>=1.26
+scikit-learn>=1.4          # LSA fallback embedder
+pdfplumber>=0.11           # PDF fallback parser
+reportlab>=4.0             # synthetic demo corpus generator
+# --- full stack ---
+pymupdf>=1.24              # primary PDF parser
+chromadb>=0.5              # vector store
+sentence-transformers>=3.0 # bge-small embeddings + cross-encoder reranker
+langgraph>=0.2             # agent state graph (bundled mini engine used if absent)
+fastapi>=0.110
+uvicorn[standard]>=0.29
+python-multipart>=0.0.9    # /ingest uploads
+streamlit>=1.35
+matplotlib>=3.8            # result plots
+pytest>=8

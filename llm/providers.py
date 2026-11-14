@@ -1,0 +1,70 @@
+"""OpenAI-compatible chat client (Groq, Hugging Face Inference Providers, Ollama, OpenAI) using only the stdlib,
+with retry/backoff on 429/5xx and a SQLite response cache (so reruns of `make eval` are free and fast)."""
+from __future__ import annotations
+import hashlib, json, os, sqlite3, time, urllib.error, urllib.request
+from config import CACHE_PATH
+from .base import LLM, LLMError, LLMResult
+
+PROVIDERS = {
+    "groq":   dict(url="https://api.groq.com/openai/v1", key="GROQ_API_KEY", model="llama-3.1-8b-instant"),
+    "hf":     dict(url="https://router.huggingface.co/v1", key="HF_TOKEN", model="meta-llama/Llama-3.1-8B-Instruct"),
+    "ollama": dict(url=os.getenv("OLLAMA_URL", "http://localhost:11434/v1"), key=None, model="llama3.1:8b"),
+    "openai": dict(url=os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1"), key="OPENAI_API_KEY", model="gpt-4o-mini"),
+}
+
+
+class Cache:
+    def __init__(self, path=CACHE_PATH):
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        self.db = sqlite3.connect(str(path), check_same_thread=False)
+        self.db.execute("CREATE TABLE IF NOT EXISTS c (k TEXT PRIMARY KEY, v TEXT)")
+
+    def get(self, k):
+        r = self.db.execute("SELECT v FROM c WHERE k=?", (k,)).fetchone()
+        return json.loads(r[0]) if r else None
+
+    def put(self, k, v):
+        self.db.execute("INSERT OR REPLACE INTO c VALUES (?,?)", (k, json.dumps(v))); self.db.commit()
+
+
+class OpenAICompatLLM(LLM):
+    def __init__(self, provider: str, model: str = "", retries: int = 4, use_cache: bool = True):
+        cfg = PROVIDERS[provider]
+        self.base, self.key_env = cfg["url"], cfg["key"]
+        self.model = model or cfg["model"]
+        self.name = f"{provider}:{self.model}"
+        self.retries = retries
+        self.cache = Cache() if use_cache else None
+        self.api_key = os.getenv(self.key_env, "") if self.key_env else ""
+        if self.key_env and not self.api_key:
+            raise LLMError(f"{self.key_env} is not set")
+
+    def generate(self, system, user, json_mode=False, max_tokens=600) -> LLMResult:
+        body = {"model": self.model, "temperature": 0, "max_tokens": max_tokens,
+                "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}]}
+        if json_mode:
+            body["response_format"] = {"type": "json_object"}
+        key = hashlib.sha256(json.dumps(body, sort_keys=True).encode()).hexdigest()
+        if self.cache and (hit := self.cache.get(key)):
+            return LLMResult(hit["text"], hit["in"], hit["out"], cached=True)
+        last = None
+        for attempt in range(self.retries):
+            try:
+                req = urllib.request.Request(self.base + "/chat/completions", data=json.dumps(body).encode(),
+                                             headers={"Content-Type": "application/json", "Authorization": f"Bearer {self.api_key}"})
+                with urllib.request.urlopen(req, timeout=60) as r:
+                    d = json.loads(r.read())
+                text = d["choices"][0]["message"]["content"] or ""
+                u = d.get("usage", {})
+                res = LLMResult(text, u.get("prompt_tokens", (len(system) + len(user)) // 4), u.get("completion_tokens", len(text) // 4))
+                if self.cache: self.cache.put(key, {"text": text, "in": res.in_tokens, "out": res.out_tokens})
+                return res
+            except urllib.error.HTTPError as e:
+                last = e
+                if e.code in (429, 500, 502, 503, 504):
+                    wait = float(e.headers.get("retry-after", 0) or 0) or 2 ** attempt
+                    time.sleep(min(wait, 20)); continue
+                raise LLMError(f"HTTP {e.code}: {e.read()[:200]!r}")
+            except Exception as e:  # network error / timeout
+                last = e; time.sleep(2 ** attempt)
+        raise LLMError(f"gave up after {self.retries} attempts: {last}")
