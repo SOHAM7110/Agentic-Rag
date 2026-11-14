@@ -32,3 +32,8 @@ CHUNK_MAX_CHARS = int(os.getenv("CHUNK_MAX_CHARS", 400))
 MAX_LOOPS = int(os.getenv("MAX_LOOPS", 3))
 TOKEN_BUDGET = int(os.getenv("TOKEN_BUDGET", 8000))
 REFERENCE_YEAR = int(os.getenv("REFERENCE_YEAR", 2026))
+
+# --- real-LLM tuning -----------------------------------------------------------
+GRADE_FLOOR = float(os.getenv("GRADE_FLOOR", 0.25))        # min evidence coverage even when the LLM grader says 'sufficient'
+LLM_MIN_INTERVAL = float(os.getenv("LLM_MIN_INTERVAL", 0)) # seconds between LLM calls (free-tier rate limits); e.g. 2.5 for Groq
+PROMPT_PASSAGES = int(os.getenv("PROMPT_PASSAGES", 6))     # evidence chunks shown to the LLM

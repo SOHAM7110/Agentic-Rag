@@ -110,8 +110,10 @@ def entity_tokens(entities: list[str], docs: dict) -> set[str]:
     return out
 
 
-def query_tokens(q: str, ignore: set[str]) -> list[str]:
-    return [t for t in tokenize(q) if t not in ignore and t not in QWORDS and t not in GENERIC]
+def query_tokens(q: str, ignore: set[str], drop_numbers: bool = False) -> list[str]:
+    """Content tokens of a query. drop_numbers=True ignores figures the *user* supplied (e.g. 'Rs 200 crore' in a
+    calculation question) - they never appear in the documents and must not lower the evidence-coverage score."""
+    return [t for t in tokenize(q) if t not in ignore and t not in QWORDS and t not in GENERIC and not (drop_numbers and t.isdigit())]
 
 
 # ------------------------------------------------------------------ query rewriting

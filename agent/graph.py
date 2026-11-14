@@ -7,7 +7,7 @@ Hard limits: MAX_LOOPS retrieval loops and TOKEN_BUDGET tokens per query, so it 
 from __future__ import annotations
 import json, re, time
 from typing import Any, TypedDict
-from config import MAX_LOOPS, TOKEN_BUDGET, TOP_K
+from config import MAX_LOOPS, TOKEN_BUDGET, TOP_K, GRADE_FLOOR, PROMPT_PASSAGES
 from ingest.facts import FACT_SPEC
 from llm.base import LLMError
 from retrieval.retriever import ctx_text
@@ -51,6 +51,8 @@ class Agent:
     def __init__(self, retriever, llm):
         self.r, self.llm = retriever, llm
         self.docs = retriever.docs
+        # the structured tools only make sense if the facts table was populated at ingestion
+        self.has_facts = any(retriever.facts.values())
         self.app = self._build()
 
     # ------------------------------------------------------------------ plumbing
@@ -85,20 +87,27 @@ class Agent:
     def plan(self, st):
         t0 = time.perf_counter(); q = st["question"]
         plan = H.make_plan(q, self.docs)
+        if not self.has_facts:                      # no facts table -> no aspect lookups / scheme-specific numeric templates
+            plan.update(aspect=None, numeric=None, descriptor=None, tools=[])
+            if plan["type"] == "compare" and len(plan["entities"]) < 2: plan["type"] = "single"
+        subs: list[str] = []
         if not self.llm.offline:
-            out = self._llm(st, P.PLAN_SYSTEM, q, lambda: {"type": plan["type"]})
-            if out.get("type") in ("single", "compare", "numeric") and out["type"] != plan["type"]:
-                if out["type"] == "compare" and len(plan["entities"]) < 2: pass
-                else: plan["type"] = out["type"]
+            out = self._llm(st, P.PLAN_SYSTEM, q, lambda: {"type": plan["type"], "sub_questions": []})
+            if out.get("type") in ("single", "compare", "numeric"): plan["type"] = out["type"]
+            subs = [s.strip() for s in (out.get("sub_questions") or []) if isinstance(s, str) and s.strip()][:4]
+        plan["sub_questions"] = subs
         queries = self._initial_queries(q, plan)
         names = [self.docs[e]["title"] for e in plan["entities"]]
         return {"plan": plan, "queries": queries, "loops": 0, "evidence": [], "tool_results": [], "tokens": st.get("tokens", 0),
-                "trace": self._trace(st, "plan", f"type={plan['type']} entities={names or 'none'} aspect={plan['aspect']} tools={plan['tools']}"
+                "trace": self._trace(st, "plan", f"type={plan['type']} sub_questions={len(subs)} entities={names or 'none'} aspect={plan['aspect']} tools={plan['tools']}"
                                      + (f" descriptor='{plan['descriptor']}'" if plan["descriptor"] else ""), t0, plan=plan, queries=queries)}
 
     def _initial_queries(self, q, plan):
         ents, asp = plan["entities"], plan["aspect"]
         label = FACT_SPEC[asp][1] if asp else ""
+        subs = plan.get("sub_questions") or []
+        if len(subs) >= 2 or (subs and plan["type"] != "single"):     # LLM decomposition: one retrieval per sub-question
+            return [{"q": s, "doc": None} for s in subs]
         if plan["descriptor"]:
             return [{"q": plan["descriptor"], "doc": None, "role": "resolve"}]
         if len(ents) >= 2:
@@ -123,7 +132,7 @@ class Agent:
             hits = self.r.search(qd["q"], "hybrid_rerank", k=TOP_K if len(queries) == 1 else 3, docs=docs_f)
             lists.append(hits)
             ign = H.entity_tokens(plan["entities"], self.docs) if qd.get("doc") else set()
-            qt = H.query_tokens(qd["q"], ign)
+            qt = H.query_tokens(qd["q"], ign, drop_numbers=not self.llm.offline)
             best = max((self.r.coverage(qt, h.chunk, ign) for h in hits), default=0.0)
             asp_ok = True
             if plan["aspect"] and qd.get("doc"):
@@ -165,7 +174,7 @@ class Agent:
             user = f"Question: {st['question']}\n\nPassages:\n{P.format_passages(self._ev_chunks(st))}"
             out = self._llm(st, P.GRADE_SYSTEM, user, lambda: h)
             floor = min((c["coverage"] for c in cov), default=0)
-            out = {"sufficient": bool(out.get("sufficient")) and floor >= 0.35, "reason": out.get("reason", "")}
+            out = {"sufficient": bool(out.get("sufficient")) and floor >= GRADE_FLOOR, "reason": out.get("reason", "")}
         over = st["tokens"] > TOKEN_BUDGET
         suff = bool(out["sufficient"])
         reason = out["reason"] + (" | token budget exhausted" if over and not suff else "")
@@ -181,8 +190,11 @@ class Agent:
         t0 = time.perf_counter(); plan = st["plan"]; attempt = st["loops"]
         new_queries = []
         for qd in st["queries"]:
-            rw = H.rewrite_query(qd["q"] if len(st["queries"]) > 1 else st["question"], plan, self.docs, attempt)
-            if len(st["queries"]) > 1:   # keep one query per entity
+            if qd.get("doc") is None and len(st["queries"]) > 1:      # LLM sub-question: only the LLM rewrites it
+                rw = {"q": qd["q"], "drop_filter": False}
+            else:
+                rw = H.rewrite_query(qd["q"] if len(st["queries"]) > 1 else st["question"], plan, self.docs, attempt)
+            if len(st["queries"]) > 1 and qd.get("doc") is not None:   # keep one query per entity
                 label = FACT_SPEC[plan["aspect"]][1] if plan["aspect"] else qd["q"]
                 rw["q"] = f"{self.docs[qd['doc']]['title']} {label}" if attempt < 2 else f"{label} {' '.join(FACT_SPEC[plan['aspect']][2][:3]) if plan['aspect'] else ''}"
             if not self.llm.offline:
@@ -196,7 +208,7 @@ class Agent:
     def tools(self, st):
         t0 = time.perf_counter(); plan = st["plan"]; res: list[T.ToolResult] = []
         asp, ents = plan["aspect"], plan["entities"]
-        if plan["type"] == "compare" and asp and len(ents) >= 2:
+        if plan["type"] == "compare" and asp and len(ents) >= 2 and all(self.r.facts.get(e) for e in ents):
             res.append(T.compare(self.r, ents, asp))
         elif plan["type"] == "numeric" and plan["numeric"]:
             npn = plan["numeric"]; vals = []
@@ -214,7 +226,14 @@ class Agent:
                     cand = T.calculator(str(out.get("expression", "")))
                     if cand.ok: expr = str(out["expression"])
                 res.append(T.calculator(expr))
-        elif plan["type"] == "single" and asp and ents:
+        elif plan["type"] == "numeric" and not self.llm.offline:
+            # no scheme template applies: let the LLM write ONE expression from numbers in the question/passages
+            pas = self._passages(st)
+            user = f"Question: {st['question']}\n\nPassages:\n{P.format_passages(pas)}"
+            out = self._llm(st, P.CALC_SYSTEM, user, lambda: {"expression": ""})
+            expr = str(out.get("expression", "")).strip()
+            if expr: res.append(T.calculator(expr))
+        elif plan["type"] == "single" and asp and ents and self.r.facts.get(ents[0]):
             res.append(T.lookup(self.r, ents[0], asp))
         out = [r.brief() for r in res]
         return {"tool_results": [r.__dict__ for r in res],
@@ -222,13 +241,14 @@ class Agent:
 
     # ---- answer
     def _passages(self, st) -> list[dict]:
-        chunks = self._ev_chunks(st)
+        lim = 8 if self.llm.offline else PROMPT_PASSAGES
+        chunks = self._ev_chunks(st)[:lim]
         ids = {c["id"] for c in chunks}
         for tr in st.get("tool_results", []):          # chunks backing tool outputs must be citable
             for cid in tr["sources"]:
                 if cid not in ids:
                     chunks.append(next(c for c in self.r.chunks if c["id"] == cid)); ids.add(cid)
-        return chunks[:10]
+        return chunks[:lim + 2]
 
     def answer(self, st):
         t0 = time.perf_counter(); plan = st["plan"]
@@ -241,7 +261,7 @@ class Agent:
             if self.llm.offline:
                 claims = self._compose_offline(st, passages, num, tools_ok)
             else:
-                tool_txt = "\n".join(f"TOOL {r['tool']}: {r['output']} [{','.join(str(num[s]) for s in r['sources'] if s in num)}]" for r in tools_ok)
+                tool_txt = "\n".join(f"TOOL RESULT {r['tool']}({r['args']}) = {r['output']} {''.join('[' + str(num[s]) + ']' for s in r['sources'] if s in num)}" for r in tools_ok)
                 user = f"Question: {st['question']}\n\nPassages:\n{P.format_passages(passages)}\n\n{tool_txt}"
                 txt = self._llm(st, P.ANSWER_SYSTEM, user, lambda: "INSUFFICIENT_EVIDENCE", json_mode=False)
                 if "INSUFFICIENT_EVIDENCE" in txt: refuse = True
@@ -261,7 +281,11 @@ class Agent:
         for s in re.split(r"(?<=[.!?\]])\s+(?=[A-Z0-9])", txt.strip()):
             cites = sorted({int(n) for grp in re.findall(r"\[(\d+(?:,\s*\d+)*)\]", s) for n in re.split(r",\s*", grp)})
             claims.append({"text": H.strip_cites(s), "cites": cites, "computed": False})
-        return [c for c in claims if c["text"]]
+        claims = [c for c in claims if c["text"]]
+        allc = sorted({n for c in claims for n in c["cites"]})
+        for c in claims:                      # models often cite once per paragraph: inherit rather than drop the claim
+            if not c["cites"] and allc: c["cites"] = allc
+        return claims
 
     def _compose_offline(self, st, passages, num, tools_ok) -> list[dict]:
         q, plan = st["question"], st["plan"]
@@ -311,7 +335,8 @@ class Agent:
         kept, dropped = [], []
         llm_flags = None
         if not self.llm.offline:
-            user = "Passages:\n" + "\n".join(f"[{i}] {t}" for i, t in enumerate(pas, 1)) + "\n\nClaims:\n" + "\n".join(
+            tools_txt = "\n".join(f"TOOL RESULT {r['tool']}({r['args']}) = {r['output']}" for r in st.get("tool_results", []) if r["ok"])
+            user = "Passages:\n" + "\n".join(f"[{i}] {t}" for i, t in enumerate(pas, 1)) + (f"\n\nTool results (computed from the passages; arithmetic is correct):\n{tools_txt}" if tools_txt else "") + "\n\nClaims:\n" + "\n".join(
                 f"{i}. {c['text']} (cited: {c['cites']})" for i, c in enumerate(st["claims"], 1))
             out = self._llm(st, P.VERIFY_SYSTEM, user, lambda: None)
             if out and isinstance(out.get("results"), list):
@@ -323,7 +348,7 @@ class Agent:
                 ok = H.claim_support(c["text"], [p.lower() for p in cited], [str(x).lower() for x in c["inputs"]]) >= 1.0
             else:
                 ok = H.claim_support(c["text"], cited) >= 0.7
-            if llm_flags is not None and i in llm_flags: ok = ok and llm_flags[i]
+            if llm_flags is not None and i in llm_flags: ok = llm_flags[i] and bool(cited)   # LLM verdict wins; claim must still carry a citation
             (kept if ok else dropped).append(c)
         if not self.llm.offline:   # keep token accounting honest for the heuristic path
             pass

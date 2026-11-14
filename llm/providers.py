@@ -2,7 +2,7 @@
 with retry/backoff on 429/5xx and a SQLite response cache (so reruns of `make eval` are free and fast)."""
 from __future__ import annotations
 import hashlib, json, os, sqlite3, time, urllib.error, urllib.request
-from config import CACHE_PATH
+from config import CACHE_PATH, LLM_MIN_INTERVAL
 from .base import LLM, LLMError, LLMResult
 
 PROVIDERS = {
@@ -25,6 +25,17 @@ class Cache:
 
     def put(self, k, v):
         self.db.execute("INSERT OR REPLACE INTO c VALUES (?,?)", (k, json.dumps(v))); self.db.commit()
+
+
+_last_call = [0.0]
+
+
+def _throttle():
+    """Space out calls so free-tier rate limits (requests/tokens per minute) are not hit."""
+    if LLM_MIN_INTERVAL > 0:
+        wait = _last_call[0] + LLM_MIN_INTERVAL - time.time()
+        if wait > 0: time.sleep(wait)
+        _last_call[0] = time.time()
 
 
 class OpenAICompatLLM(LLM):
@@ -50,6 +61,7 @@ class OpenAICompatLLM(LLM):
         last = None
         for attempt in range(self.retries):
             try:
+                _throttle()
                 req = urllib.request.Request(self.base + "/chat/completions", data=json.dumps(body).encode(),
                                              headers={"Content-Type": "application/json", "Authorization": f"Bearer {self.api_key}"})
                 with urllib.request.urlopen(req, timeout=60) as r:

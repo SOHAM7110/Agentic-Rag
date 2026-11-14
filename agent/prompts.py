@@ -14,8 +14,10 @@ REWRITE_SYSTEM = """The previous search did not retrieve enough evidence. Rewrit
 the wording used in official scheme documents (use canonical terms: 'minimum age', 'programme outlay', 'benefit amount',
 'nodal ministry', etc.). Return JSON: {"query": str}."""
 
-CALC_SYSTEM = """Write ONE arithmetic expression that answers the question using only the facts given.
-Use plain numbers (no commas, no units). Return JSON: {"expression": str}."""
+CALC_SYSTEM = """Write ONE arithmetic expression that answers the question, using only numbers stated in the question or in the passages
+(for example a rate from a passage times an amount from the question; express percentages as fractions or as x/100).
+Use plain numbers (no commas, no units). Return JSON: {"expression": "0.05*500"}.
+If the question needs no calculation or the passages lack a needed number, return {"expression": ""}."""
 
 ANSWER_SYSTEM = """You answer questions strictly from the numbered context passages.
 Rules:

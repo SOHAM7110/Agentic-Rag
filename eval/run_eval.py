@@ -31,8 +31,9 @@ def retrieval_ablation(r: Retriever, gold):
     return {m: {k: M.mean([x[k] for x in v]) for k in v[0]} for m, v in rows.items()}, len(ans)
 
 
-def run_systems(r, gold, gen_llm, judge):
+def run_systems(r, gold, gen_llm, judge, names=None):
     systems = {"naive_rag": NaiveRAG(r, gen_llm), "hybrid_rerank_rag": HybridRAG(r, gen_llm), "agent": Agent(r, gen_llm)}
+    systems = {k: v for k, v in systems.items() if not names or k in names}
     by_id = {c["id"]: c for c in r.chunks}
     per_q = []
     for name, s in systems.items():
@@ -53,7 +54,7 @@ def run_systems(r, gold, gen_llm, judge):
 
 def summarize(per_q):
     S = {}
-    for name in SYS_LABEL:
+    for name in [s for s in SYS_LABEL if any(r["system"] == s for r in per_q)]:
         rows = [r for r in per_q if r["system"] == name]
         ans = [r for r in rows if r["type"] != "unanswerable"]
         faith = [r["faithfulness"] for r in rows if r["faithfulness"] is not None]
@@ -76,6 +77,8 @@ def summarize(per_q):
 
 
 def findings(S):
+    if not all(k in S for k in SYS_LABEL):
+        return ["(findings need all three systems - run without --systems)"]
     a, h, n = S["agent"], S["hybrid_rerank_rag"], S["naive_rag"]
     out = []
     p = lambda x: f"{100 * x:.0f}%"
@@ -107,7 +110,8 @@ def tables(abl, n_ans, S, per_q, meta, gold_n):
     for m in MODES:
         x = abl[m]; L.append(f"| {MODE_LABEL[m]} | {pc(x['hit@1'])} | {pc(x['hit@3'])} | {pc(x['hit@5'])} | {pc(x['recall@3'])} | {pc(x['recall@5'])} | {x['mrr']:.3f} |")
     L.append("\n### Three-system comparison\n")
-    L.append("| Metric | Naive RAG | Hybrid + rerank | Full agent |\n|---|---|---|---|")
+    names = list(S)
+    L.append("| Metric | " + " | ".join(SYS_LABEL[s] for s in names) + " |\n|---|" + "---|" * len(names))
     rowdefs = [("Correctness, all questions (%)", "correctness", pc), ("Correctness, answerable only (%)", "correctness_answerable", pc),
                ("Faithfulness (%)", "faithfulness", pc), ("Citation hit (gold page cited) (%)", "citation_hit", pc),
                ("Cited text contains answer (%)", "cited_contains_answer", pc), ("Refusal precision (%)", "refusal_precision", pc),
@@ -116,12 +120,12 @@ def tables(abl, n_ans, S, per_q, meta, gold_n):
                ("Loop termination (%)", "termination", pc), ("Latency p50 (ms)", "p50_ms", lambda x: f"{x:.0f}"),
                ("Latency p95 (ms)", "p95_ms", lambda x: f"{x:.0f}"), ("Tokens / query (est.)", "tokens", lambda x: f"{x:.0f}")]
     for label, key, f in rowdefs:
-        vals = [S[s][key] for s in SYS_LABEL]
-        L.append(f"| {label} | " + " | ".join("-" if (key in ("tool_success",) and v is None) or (key in ("avg_steps", "termination") and s != 'agent' and False) else f(v) for s, v in zip(SYS_LABEL, vals)) + " |")
+        vals = [S[s][key] for s in names]
+        L.append(f"| {label} | " + " | ".join("-" if v is None else f(v) for v in vals) + " |")
     L.append("\n### Correctness by question type (%)\n")
     L.append("| System | " + " | ".join(TYPES) + " |\n|---|" + "---|" * len(TYPES))
-    for s, lab in SYS_LABEL.items():
-        L.append(f"| {lab} | " + " | ".join(pc(S[s]['by_type'][t]) for t in TYPES) + " |")
+    for s in names:
+        L.append(f"| {SYS_LABEL[s]} | " + " | ".join(pc(S[s]['by_type'][t]) if any(r['system'] == s and r['type'] == t for r in per_q) else '-' for t in TYPES) + " |")
     L.append("\n### Findings (generated from the run)\n")
     for f in findings(S): L.append(f"- {f}")
     jf = RESULTS_DIR / "judge_agreement.json"
@@ -144,8 +148,8 @@ def plots(abl, S):
     ax.set_xticks([j + 1.5 * w for j in range(len(ks))]); ax.set_xticklabels(["Hit@1", "Hit@3", "Hit@5", "MRR"]); ax.set_ylim(0, 1.05)
     ax.set_title("Retrieval ablation"); ax.legend(fontsize=7); fig.tight_layout(); fig.savefig(RESULTS_DIR / "retrieval_ablation.png", dpi=140); plt.close(fig)
     fig, ax = plt.subplots(figsize=(7, 3.4)); w = 0.26
-    for i, (s, lab) in enumerate(SYS_LABEL.items()):
-        ax.bar([j + i * w for j in range(len(TYPES))], [S[s]["by_type"][t] for t in TYPES], w, label=lab)
+    for i, s in enumerate(S):
+        ax.bar([j + i * w for j in range(len(TYPES))], [S[s]["by_type"][t] for t in TYPES], w, label=SYS_LABEL[s])
     ax.set_xticks([j + w for j in range(len(TYPES))]); ax.set_xticklabels(TYPES, fontsize=8); ax.set_ylim(0, 1.05)
     ax.set_title("Correctness by question type"); ax.legend(fontsize=7); fig.tight_layout(); fig.savefig(RESULTS_DIR / "correctness_by_type.png", dpi=140); plt.close(fig)
 
@@ -159,23 +163,47 @@ def update_readme(md: str):
     p.write_text(s)
 
 
+def spread(gold, n):
+    """n questions spread evenly over the whole (type-interleaved) set, deterministic."""
+    if not n or n >= len(gold): return gold
+    step = len(gold) / n
+    return [gold[int(i * step)] for i in range(n)]
+
+
 def main():
+    import argparse
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument("--retrieval-only", action="store_true", help="only the retrieval ablation (no LLM calls at all)")
+    ap.add_argument("--systems", default="", help="comma list of: naive_rag,hybrid_rerank_rag,agent (default: all)")
+    ap.add_argument("--limit", type=int, default=0, help="evaluate only N questions spread across the set (saves free-tier quota)")
+    a = ap.parse_args()
     t0 = time.time(); RESULTS_DIR.mkdir(exist_ok=True)
     gold = load_golden(); r = Retriever()
+    abl, n_ans = retrieval_ablation(r, gold)
+    info = r.info()
+    ret_meta = f"{info['embedder']} + BM25 + {info['reranker']}; store={info['store']}"
+    if a.retrieval_only:
+        pc = lambda x: f"{100 * x:.1f}"
+        out = [f"*{len(gold)} golden questions ({n_ans} answerable); retrieval: `{ret_meta}`*\n", "| Retriever | Hit@1 | Hit@3 | Hit@5 | Recall@3 | Recall@5 | MRR |", "|---|---|---|---|---|---|---|"]
+        for m in MODES:
+            x = abl[m]; out.append(f"| {MODE_LABEL[m]} | {pc(x['hit@1'])} | {pc(x['hit@3'])} | {pc(x['hit@5'])} | {pc(x['recall@3'])} | {pc(x['recall@5'])} | {x['mrr']:.3f} |")
+        md = "\n".join(out); (RESULTS_DIR / "retrieval_only.md").write_text(md + "\n"); print(md); return
+    gold = spread(gold, a.limit)
+    names = [s.strip() for s in a.systems.split(",") if s.strip()]
     gen, jud = get_llm(), get_llm(JUDGE_PROVIDER, JUDGE_MODEL)
     if not gen.offline and gen.name == jud.name:
         print("[eval] WARNING: judge model == generator model; use a different judge to avoid self-preference bias")
     judge = Judge(jud)
-    abl, n_ans = retrieval_ablation(r, gold)
-    per_q = run_systems(r, gold, gen, judge)
+    per_q = run_systems(r, gold, gen, judge, names)
     S = summarize(per_q)
-    info = r.info()
-    meta = {"gen": gen.name, "judge": jud.name + (" (rule-based)" if jud.offline else ""), "retrieval": f"{info['embedder']} + BM25 + {info['reranker']}; store={info['store']}"}
-    (RESULTS_DIR / "results.json").write_text(json.dumps({"meta": meta, "retrieval_ablation": abl, "systems": S, "n_questions": len(gold)}, indent=1))
+    meta = {"gen": gen.name, "judge": jud.name + (" (rule-based)" if jud.offline else ""), "retrieval": ret_meta}
+    partial = bool(a.limit or names)
+    (RESULTS_DIR / ("results_partial.json" if partial else "results.json")).write_text(json.dumps({"meta": meta, "retrieval_ablation": abl, "systems": S, "n_questions": len(gold)}, indent=1))
     (RESULTS_DIR / "per_question.jsonl").write_text("\n".join(json.dumps(x, default=str) for x in per_q) + "\n")
     md = tables(abl, n_ans, S, per_q, meta, len(gold))
-    (RESULTS_DIR / "results.md").write_text(md + "\n")
-    plots(abl, S); update_readme(md)
+    (RESULTS_DIR / ("results_partial.md" if partial else "results.md")).write_text(md + "\n")
+    if not partial:
+        plots(abl, S); update_readme(md)
     print(md); print(f"\n[eval] done in {time.time() - t0:.0f}s -> results/")
 
 
