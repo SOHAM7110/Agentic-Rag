@@ -6,6 +6,7 @@ import json, re, sys, time
 from collections import defaultdict
 from config import GOLDEN_PATH, RESULTS_DIR, LLM_PROVIDER, LLM_MODEL, JUDGE_PROVIDER, JUDGE_MODEL, ROOT
 from llm import get_llm
+from llm.base import LLMQuotaError
 from retrieval.retriever import Retriever, MODES
 from agent.graph import Agent, ENGINE
 from agent.baselines import NaiveRAG, HybridRAG
@@ -32,14 +33,20 @@ def retrieval_ablation(r: Retriever, gold):
 
 
 def run_systems(r, gold, gen_llm, judge, names=None):
+    """-> (rows, stop_message). On a long rate-limit (LLMQuotaError) it stops cleanly and returns what is finished."""
     systems = {"naive_rag": NaiveRAG(r, gen_llm), "hybrid_rerank_rag": HybridRAG(r, gen_llm), "agent": Agent(r, gen_llm)}
     systems = {k: v for k, v in systems.items() if not names or k in names}
     by_id = {c["id"]: c for c in r.chunks}
-    per_q = []
+    per_q, stop = [], ""
     for name, s in systems.items():
-        for g in gold:
-            res = s.run(g["question"])
-            corr = judge.correctness(g, res); faith = judge.faithfulness(res, by_id)
+        for i, g in enumerate(gold, 1):
+            t0 = time.time()
+            try:
+                res = s.run(g["question"])
+                corr = judge.correctness(g, res); faith = judge.faithfulness(res, by_id)
+            except LLMQuotaError as e:
+                stop = f"STOPPED at {name} question {i}/{len(gold)} ({g['id']}): {e}"
+                print(f"[eval] {stop}", flush=True); break
             for c in res["citations"]: c["full_text"] = by_id[c["chunk_id"]]["text"]
             cit = M.citation_scores(res["citations"], g["gold_sources"], g["answer_keys"]) if g["type"] != "unanswerable" and not res["refused"] else \
                   {"citation_hit": 0.0, "citation_precision": 0.0, "cited_contains_answer": 0.0}
@@ -49,8 +56,11 @@ def run_systems(r, gold, gen_llm, judge, names=None):
                           "loops": res["loops"], "tool_calls": res["tool_calls"], "terminated": res["terminated"], "degraded": res["degraded"],
                           "llm_error": res.get("llm_error", ""), "trace": [f"{t['node']}: {t['summary'][:160]}" for t in res["trace"]],
                           "n_citations": len(res["citations"])})
-        print(f"[eval] {name} done")
-    return per_q
+            print(f"[eval] {name} {i}/{len(gold)} {g['id']:<8} {time.time() - t0:5.1f}s  correct={corr['score']} refused={res['refused']}", flush=True)
+            (RESULTS_DIR / "per_question.jsonl").write_text("\n".join(json.dumps(x, default=str) for x in per_q) + "\n")   # saved as we go
+        if stop: break
+        print(f"[eval] {name} done", flush=True)
+    return per_q, stop
 
 
 def summarize(per_q):
@@ -199,13 +209,15 @@ def main():
     if not gen.offline and gen.name == jud.name:
         print("[eval] WARNING: judge model == generator model; use a different judge to avoid self-preference bias")
     judge = Judge(jud)
-    per_q = run_systems(r, gold, gen, judge, names)
+    per_q, stop = run_systems(r, gold, gen, judge, names)
+    if not per_q: raise SystemExit(stop or 'nothing evaluated')
     S = summarize(per_q)
     meta = {"gen": gen.name, "judge": jud.name + (" (rule-based)" if jud.offline else ""), "retrieval": ret_meta}
-    partial = bool(a.limit or names)
+    partial = bool(a.limit or names or stop)
     (RESULTS_DIR / ("results_partial.json" if partial else "results.json")).write_text(json.dumps({"meta": meta, "retrieval_ablation": abl, "systems": S, "n_questions": len(gold)}, indent=1))
     (RESULTS_DIR / "per_question.jsonl").write_text("\n".join(json.dumps(x, default=str) for x in per_q) + "\n")
     md = tables(abl, n_ans, S, per_q, meta, len(gold))
+    if stop: md = f"> **Run stopped early - results below cover only the questions finished.** {stop}\n\n" + md
     (RESULTS_DIR / ("results_partial.md" if partial else "results.md")).write_text(md + "\n")
     if not partial:
         plots(abl, S); update_readme(md)

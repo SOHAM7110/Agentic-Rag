@@ -2,8 +2,8 @@
 with retry/backoff on 429/5xx and a SQLite response cache (so reruns of `make eval` are free and fast)."""
 from __future__ import annotations
 import hashlib, json, os, re, sqlite3, time, urllib.error, urllib.request
-from config import CACHE_PATH, LLM_MIN_INTERVAL, LLM_REASONING_EFFORT
-from .base import LLM, LLMError, LLMResult
+from config import CACHE_PATH, LLM_MIN_INTERVAL, LLM_REASONING_EFFORT, LLM_MAX_WAIT
+from .base import LLM, LLMError, LLMQuotaError, LLMResult
 
 PROVIDERS = {
     "groq":   dict(url="https://api.groq.com/openai/v1", key="GROQ_API_KEY", model="llama-3.1-8b-instant"),
@@ -84,8 +84,11 @@ class OpenAICompatLLM(LLM):
                 last = e
                 detail = e.read()[:300]
                 if e.code in (429, 500, 502, 503, 504):
-                    wait = float(e.headers.get("retry-after", 0) or 0) or 2 ** attempt
-                    time.sleep(min(wait, 65)); continue
+                    try: hdr = float(e.headers.get("retry-after", 0) or 0)
+                    except ValueError: hdr = 0.0
+                    if e.code == 429 and hdr > LLM_MAX_WAIT:      # e.g. daily token allowance exhausted: do not sleep for hours
+                        raise LLMQuotaError(f"rate limit: server asks to wait {hdr:.0f}s ({hdr / 60:.0f} min). {detail[:200]!r}")
+                    time.sleep(min(hdr or 2 ** attempt, LLM_MAX_WAIT)); continue
                 if e.code == 400 and any(k in body for k in optional):
                     for k in optional: body.pop(k, None)             # model doesn't accept these options: retry plain
                     continue

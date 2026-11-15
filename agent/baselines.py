@@ -2,7 +2,7 @@
 with a grounded/refusal prompt. Same result schema as Agent.run so one evaluator scores all three."""
 from __future__ import annotations
 import re, time
-from llm.base import LLMError
+from llm.base import LLMError, LLMQuotaError
 from retrieval.text import approx_tokens, tokenize
 from . import heuristics as H, prompts as P
 
@@ -45,6 +45,8 @@ class NaiveRAG(_Base):
                 res = self.llm.generate(NAIVE_SYSTEM, f"Question: {q}\n\nContext:\n{prompt}")
                 text = res.text.strip(); tokens = res.in_tokens + res.out_tokens
                 cites = [int(n) for n in re.findall(r"\[(\d+)\]", text)] or list(range(1, len(passages) + 1))
+            except LLMQuotaError:
+                raise
             except LLMError:
                 degraded = True
         if text is None:
@@ -79,6 +81,8 @@ class HybridRAG(_Base):
                 tokens = res.in_tokens + res.out_tokens; text = res.text.strip()
                 if "INSUFFICIENT_EVIDENCE" in text: refused = True
                 else: cites = [int(n) for n in re.findall(r"\[(\d+)\]", text)]
+            except LLMQuotaError:
+                raise
             except LLMError:
                 degraded = True; text = None
         if text is None:

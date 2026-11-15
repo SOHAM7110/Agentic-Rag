@@ -9,7 +9,7 @@ import json, re, time
 from typing import Any, TypedDict
 from config import MAX_LOOPS, TOKEN_BUDGET, TOP_K, GRADE_FLOOR, PROMPT_PASSAGES
 from ingest.facts import FACT_SPEC
-from llm.base import LLMError
+from llm.base import LLMError, LLMQuotaError
 from retrieval.retriever import ctx_text
 from retrieval.text import approx_tokens
 from . import heuristics as H, prompts as P, tools as T
@@ -70,6 +70,8 @@ class Agent:
             data = parse_json(r.text)
             if data is not None: return data
             st["llm_error"] = f"unparseable JSON: {r.text[:200]!r}"
+        except LLMQuotaError:
+            raise
         except LLMError as e:
             st["llm_error"] = str(e)[:300]
         st["degraded"] = True
@@ -392,6 +394,8 @@ class Agent:
         t0 = time.perf_counter(); terminated = True
         try:
             st = self.app.invoke({"question": question, "tokens": 0, "trace": [], "degraded": False}, {"recursion_limit": 40})
+        except LLMQuotaError:
+            raise
         except Exception as e:     # never crash a request
             st = {"answer": f"Internal error: {type(e).__name__}", "refused": True, "trace": [], "tokens": 0, "loops": 0, "claims": [], "passages": [], "tool_results": []}
             terminated = False

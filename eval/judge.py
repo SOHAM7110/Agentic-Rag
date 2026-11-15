@@ -4,7 +4,7 @@ from __future__ import annotations
 import json, re
 from agent import heuristics as H, prompts as P
 from agent.graph import parse_json
-from llm.base import LLMError
+from llm.base import LLMError, LLMQuotaError
 from retrieval.retriever import ctx_text
 from .metrics import has_key, norm
 
@@ -26,6 +26,8 @@ class Judge:
             try:
                 out = parse_json(self.llm.generate(P.JUDGE_CORRECT_SYSTEM, user, json_mode=True, max_tokens=200).text)
                 if out is not None: return {"score": float(out.get("score", 0)), "reason": out.get("reason", "")}
+            except LLMQuotaError:
+                raise
             except LLMError:
                 pass                                           # fall through to rules
         return self._rule(item, res["answer"])
@@ -54,6 +56,8 @@ class Judge:
             try:
                 out = parse_json(self.llm.generate(P.JUDGE_FAITH_SYSTEM, user, json_mode=True, max_tokens=100).text)
                 if out and out.get("total"): return {"score": min(1.0, out["supported"] / out["total"]), "reason": "llm"}
+            except LLMQuotaError:
+                raise
             except LLMError:
                 pass
         claims = [s for s in re.split(r"(?<=[.;!?])\s+", H.strip_cites(res["answer"])) if s.strip()]

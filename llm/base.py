@@ -7,6 +7,11 @@ class LLMError(RuntimeError):
     pass
 
 
+class LLMQuotaError(LLMError):
+    """Rate/usage limit with a long wait (e.g. the free daily token allowance is used up). Not retried and NOT swallowed by
+    the agent's fallback logic: callers should stop and report, instead of silently degrading or sleeping for hours."""
+
+
 @dataclass
 class LLMResult:
     text: str

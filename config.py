@@ -52,3 +52,4 @@ GRADE_FLOOR = float(os.getenv("GRADE_FLOOR", 0.25))        # min evidence covera
 LLM_MIN_INTERVAL = float(os.getenv("LLM_MIN_INTERVAL", 0)) # seconds between LLM calls (free-tier rate limits); e.g. 2.5 for Groq
 PROMPT_PASSAGES = int(os.getenv("PROMPT_PASSAGES", 6))     # evidence chunks shown to the LLM
 LLM_REASONING_EFFORT = os.getenv("LLM_REASONING_EFFORT", "low")   # gpt-oss models: low | medium | high (higher = better but slower/more tokens)
+LLM_MAX_WAIT = float(os.getenv("LLM_MAX_WAIT", 90))   # a 429 asking us to wait longer than this (seconds) aborts instead of sleeping

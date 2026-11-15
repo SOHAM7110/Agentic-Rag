@@ -4,7 +4,7 @@ Run: python -m tests.test_llm_paths   (uses whatever index is in data/index or $
 import json
 from agent import prompts as P
 from agent.graph import Agent
-from llm.base import LLM, LLMError, LLMResult
+from llm.base import LLM, LLMError, LLMQuotaError, LLMResult
 
 
 class FakeLLM(LLM):
@@ -73,6 +73,38 @@ def test_model_can_refuse():
 def test_llm_failure_degrades_instead_of_crashing():
     r = _agent(FakeLLM(fail=True)).run("What is the single counterparty exposure limit?")
     assert r["terminated"] and r["degraded"] and r["answer"]
+
+
+def test_quota_error_stops_the_run_instead_of_degrading():
+    class Quota(FakeLLM):
+        def generate(self, *a, **k): raise LLMQuotaError("daily limit")
+    try: _agent(Quota()).run("What is the single counterparty exposure limit?"); assert False, "should have raised"
+    except LLMQuotaError: pass
+
+
+def test_provider_aborts_on_long_429_and_retries_short_429():
+    import http.server, os, threading, time
+    mode = {"retry": "5000", "hits": 0}
+    class H(http.server.BaseHTTPRequestHandler):
+        def do_POST(self):
+            self.rfile.read(int(self.headers["Content-Length"])); mode["hits"] += 1
+            if mode["retry"] and mode["hits"] <= (1 if mode["retry"] == "1" else 99):
+                self.send_response(429); self.send_header("retry-after", mode["retry"]); self.end_headers(); self.wfile.write(b"{}"); return
+            self.send_response(200); self.send_header("Content-Type", "application/json"); self.end_headers()
+            self.wfile.write(json.dumps({"choices": [{"message": {"content": "OK"}}], "usage": {}}).encode())
+        def log_message(self, *a): pass
+    import http.server as hs
+    srv = hs.HTTPServer(("127.0.0.1", 8766), H); threading.Thread(target=srv.serve_forever, daemon=True).start()
+    os.environ["GROQ_API_KEY"] = "x"
+    import llm.providers as PR
+    PR.PROVIDERS["groq"]["url"] = "http://127.0.0.1:8766"
+    l = PR.OpenAICompatLLM("groq", "m", use_cache=False)
+    t0 = time.time()
+    try: l.generate("s", "u"); assert False
+    except LLMQuotaError: assert time.time() - t0 < 3, "must abort immediately, not sleep"
+    mode.update(retry="1", hits=0)
+    assert l.generate("s", "u").text == "OK" and mode["hits"] == 2          # slept ~1s, then succeeded
+    srv.shutdown()
 
 
 def test_loops_are_bounded():
