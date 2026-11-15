@@ -132,7 +132,9 @@ def tables(abl, n_ans, S, per_q, meta, gold_n):
                ("Latency p95 (ms)", "p95_ms", lambda x: f"{x:.0f}"), ("Tokens / query (est.)", "tokens", lambda x: f"{x:.0f}")]
     for label, key, f in rowdefs:
         vals = [S[s][key] for s in names]
-        L.append(f"| {label} | " + " | ".join("-" if v is None else f(v) for v in vals) + " |")
+        L.append(f"| {label} | " + " | ".join("n/a" if (key in ("citation_hit", "cited_contains_answer") and s == "naive_rag") else "-" if v is None else f(v)
+                                              for s, v in zip(names, vals)) + " |")
+    L.append("\n*Naive RAG is not asked to cite (its citation metrics are n/a). Hybrid and the agent use the same citation parser and the same post-hoc attribution rule. Latency includes any client-side throttling and excludes cached calls; use a cold run for latency claims.*")
     L.append("\n### Correctness by question type (%)\n")
     L.append("| System | " + " | ".join(TYPES) + " |\n|---|" + "---|" * len(TYPES))
     for s in names:

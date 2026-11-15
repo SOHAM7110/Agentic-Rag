@@ -5,7 +5,7 @@
 
 Hard limits: MAX_LOOPS retrieval loops and TOKEN_BUDGET tokens per query, so it always terminates."""
 from __future__ import annotations
-import json, re, time
+import json, re, threading, time
 from typing import Any, TypedDict
 from config import MAX_LOOPS, TOKEN_BUDGET, TOP_K, GRADE_FLOOR, PROMPT_PASSAGES
 from ingest.facts import FACT_SPEC
@@ -53,34 +53,40 @@ class Agent:
         self.docs = retriever.docs
         # the structured tools only make sense if the facts table was populated at ingestion
         self.has_facts = any(retriever.facts.values())
-        self.app = self._build()
+        self._tl = threading.local()          # per-run counters (tokens, fallbacks): LangGraph passes nodes a COPY of the state,
+        self.app = self._build()              # so anything mutated in place there would be lost
 
     # ------------------------------------------------------------------ plumbing
+    def _rs(self) -> dict:
+        rs = getattr(self._tl, "rs", None)
+        if rs is None: rs = self._tl.rs = {"tokens": 0, "degraded": False, "llm_error": ""}
+        return rs
+
     def _llm(self, st: dict, system: str, user: str, heuristic, json_mode=True):
         """Call the model (or the rule-based heuristic in offline mode). Falls back to the heuristic on any
         failure so a rate-limit or malformed JSON never crashes a query."""
         tok = approx_tokens(system + user)
         if self.llm.offline:
-            out = heuristic(); st["tokens"] = st.get("tokens", 0) + tok + approx_tokens(json.dumps(out, default=str))
+            out = heuristic(); self._rs()["tokens"] += tok + approx_tokens(json.dumps(out, default=str))
             return out
         try:
             r = self.llm.generate(system, user, json_mode=json_mode)
-            st["tokens"] = st.get("tokens", 0) + r.in_tokens + r.out_tokens
+            self._rs()["tokens"] += r.in_tokens + r.out_tokens
             if not json_mode: return r.text
             data = parse_json(r.text)
             if data is not None: return data
-            st["llm_error"] = f"unparseable JSON: {r.text[:200]!r}"
+            self._rs()["llm_error"] = f"unparseable JSON: {r.text[:200]!r}"
         except LLMQuotaError:
             raise
         except LLMError as e:
-            st["llm_error"] = str(e)[:300]
-        st["degraded"] = True
+            self._rs()["llm_error"] = str(e)[:300]
+        self._rs()["degraded"] = True
         return heuristic()
 
     def _trace(self, st, node, summary, t0, **data):
         tr = list(st.get("trace", []))
         tr.append({"step": len(tr) + 1, "node": node, "summary": summary, "ms": round((time.perf_counter() - t0) * 1000, 1),
-                   "tokens": st.get("tokens", 0), "data": data})
+                   "tokens": self._rs()["tokens"], "data": data})
         return tr
 
     def _ev_chunks(self, st) -> list[dict]:
@@ -101,7 +107,7 @@ class Agent:
         plan["sub_questions"] = subs
         queries = self._initial_queries(q, plan)
         names = [self.docs[e]["title"] for e in plan["entities"]]
-        return {"plan": plan, "queries": queries, "loops": 0, "evidence": [], "tool_results": [], "tokens": st.get("tokens", 0),
+        return {"plan": plan, "queries": queries, "loops": 0, "evidence": [], "tool_results": [],
                 "trace": self._trace(st, "plan", f"type={plan['type']} sub_questions={len(subs)} entities={names or 'none'} aspect={plan['aspect']} tools={plan['tools']}"
                                      + (f" descriptor='{plan['descriptor']}'" if plan["descriptor"] else ""), t0, plan=plan, queries=queries)}
 
@@ -149,7 +155,8 @@ class Agent:
                     seen.add(l[rank].idx); merged.append({"idx": l[rank].idx, "score": round(l[rank].score, 3)})
         ev = merged[:8]
         tok = sum(approx_tokens(self.r.chunks[e["idx"]]["text"]) for e in ev)
-        return {"plan": plan, "queries": queries, "loops": loops, "evidence": ev, "coverages": cov, "tokens": st.get("tokens", 0) + tok // 2,
+        self._rs()["tokens"] += tok // 2
+        return {"plan": plan, "queries": queries, "loops": loops, "evidence": ev, "coverages": cov,
                 "trace": self._trace(st, "retrieve", f"loop {loops}: {len(queries)} query(ies) -> {len(ev)} chunks (hybrid+rerank){note}", t0,
                                      queries=[q["q"] for q in queries], hits=[self.r.chunks[e["idx"]]["id"] for e in ev], coverage=cov)}
 
@@ -178,14 +185,14 @@ class Agent:
             out = self._llm(st, P.GRADE_SYSTEM, user, lambda: h)
             floor = min((c["coverage"] for c in cov), default=0)
             out = {"sufficient": bool(out.get("sufficient")) and floor >= GRADE_FLOOR, "reason": out.get("reason", "")}
-        over = st["tokens"] > TOKEN_BUDGET
+        over = self._rs()["tokens"] > TOKEN_BUDGET
         suff = bool(out["sufficient"])
         reason = out["reason"] + (" | token budget exhausted" if over and not suff else "")
         return {"sufficient": suff, "reason": reason,
                 "trace": self._trace(st, "grade", f"sufficient={suff} ({reason})", t0, sufficient=suff, reason=reason)}
 
     def route_after_grade(self, st):
-        if st["sufficient"] or st["loops"] >= MAX_LOOPS or st["tokens"] > TOKEN_BUDGET:
+        if st["sufficient"] or st["loops"] >= MAX_LOOPS or self._rs()["tokens"] > TOKEN_BUDGET:
             return "tools"
         return "rewrite"
 
@@ -367,7 +374,7 @@ class Agent:
         if not self.llm.offline:   # keep token accounting honest for the heuristic path
             pass
         else:
-            st["tokens"] = st.get("tokens", 0) + approx_tokens("".join(pas) + st["answer"])
+            self._rs()["tokens"] += approx_tokens("".join(pas) + st["answer"])
         if not kept:
             return {"answer": "I can't answer this reliably: none of the draft claims were supported by the cited passages.",
                     "claims": [], "refused": True, "verified": False,
@@ -392,12 +399,13 @@ class Agent:
 
     def run(self, question: str) -> dict:
         t0 = time.perf_counter(); terminated = True
+        self._tl.rs = {"tokens": 0, "degraded": False, "llm_error": ""}
         try:
-            st = self.app.invoke({"question": question, "tokens": 0, "trace": [], "degraded": False}, {"recursion_limit": 40})
+            st = self.app.invoke({"question": question, "trace": []}, {"recursion_limit": 40})
         except LLMQuotaError:
             raise
         except Exception as e:     # never crash a request
-            st = {"answer": f"Internal error: {type(e).__name__}", "refused": True, "trace": [], "tokens": 0, "loops": 0, "claims": [], "passages": [], "tool_results": []}
+            st = {"answer": f"Internal error: {type(e).__name__}", "refused": True, "trace": [], "loops": 0, "claims": [], "passages": [], "tool_results": []}
             terminated = False
         by_id = {c["id"]: c for c in self.r.chunks}
         pas = st.get("passages", []); cites = []
@@ -410,8 +418,8 @@ class Agent:
         cites = sorted({c["chunk_id"]: c for c in cites}.values(), key=lambda c: c["n"])
         tr = st.get("tool_results", [])
         return {"system": "agent", "question": question, "answer": st.get("answer", ""), "refused": bool(st.get("refused")),
-                "citations": cites, "trace": st.get("trace", []), "tokens": st.get("tokens", 0),
+                "citations": cites, "trace": st.get("trace", []), "tokens": self._rs()["tokens"],
                 "latency_ms": round((time.perf_counter() - t0) * 1000, 1), "steps": len(st.get("trace", [])),
                 "loops": st.get("loops", 0), "tool_calls": [{"tool": r["tool"], "ok": r["ok"]} for r in tr],
-                "terminated": terminated and st.get("loops", 0) <= MAX_LOOPS, "degraded": bool(st.get("degraded")), "llm_error": st.get("llm_error", ""),
+                "terminated": terminated and st.get("loops", 0) <= MAX_LOOPS, "degraded": self._rs()["degraded"], "llm_error": self._rs()["llm_error"],
                 "retrieved": [c for c in st.get("passages", [])], "engine": ENGINE}

@@ -3,6 +3,7 @@ with a grounded/refusal prompt. Same result schema as Agent.run so one evaluator
 from __future__ import annotations
 import re, time
 from llm.base import LLMError, LLMQuotaError
+from retrieval.retriever import ctx_text
 from retrieval.text import approx_tokens, tokenize
 from . import heuristics as H, prompts as P
 
@@ -44,7 +45,7 @@ class NaiveRAG(_Base):
             try:
                 res = self.llm.generate(NAIVE_SYSTEM, f"Question: {q}\n\nContext:\n{prompt}")
                 text = res.text.strip(); tokens = res.in_tokens + res.out_tokens
-                cites = [int(n) for n in re.findall(r"\[(\d+)\]", text)] or list(range(1, len(passages) + 1))
+                cites = H.parse_cites(text) or list(range(1, len(passages) + 1))   # naive prompt asks for no citations: n/a in the report
             except LLMQuotaError:
                 raise
             except LLMError:
@@ -80,7 +81,11 @@ class HybridRAG(_Base):
                 res = self.llm.generate(P.ANSWER_SYSTEM, f"Question: {q}\n\nPassages:\n{prompt}")
                 tokens = res.in_tokens + res.out_tokens; text = res.text.strip()
                 if "INSUFFICIENT_EVIDENCE" in text: refused = True
-                else: cites = [int(n) for n in re.findall(r"\[(\d+)\]", text)]
+                else:
+                    cites = H.parse_cites(text)
+                    if not cites:      # same post-hoc attribution rule as the agent, so the citation comparison is fair
+                        sc = sorted(((H.content_overlap(H.strip_cites(text), ctx_text(p)), i) for i, p in enumerate(passages, 1)), reverse=True)
+                        cites = sorted(i for s, i in sc[:2] if s >= 0.3)
             except LLMQuotaError:
                 raise
             except LLMError:

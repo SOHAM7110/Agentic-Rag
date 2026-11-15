@@ -13,7 +13,7 @@ class _Compiled:
             steps += 1
             if steps > limit:
                 raise RuntimeError(f"recursion limit {limit} reached")
-            state.update(self.g.nodes[node](state) or {})
+            state.update(self.g.nodes[node](dict(state)) or {})   # nodes get a copy, like LangGraph
             if node in self.g.cond:
                 fn, mapping = self.g.cond[node]
                 node = mapping[fn(state)]

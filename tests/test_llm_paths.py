@@ -107,6 +107,21 @@ def test_provider_aborts_on_long_429_and_retries_short_429():
     srv.shutdown()
 
 
+def test_token_and_fallback_accounting_survives_state_copies():
+    llm = FakeLLM()
+    r = _agent(llm).run("What is the single counterparty exposure limit?")
+    assert r["tokens"] >= 150 * len(llm.calls), (r["tokens"], len(llm.calls))        # every LLM call is counted, not just plan/retrieve
+    bad = _agent(FakeLLM(fail=True)).run("What is the single counterparty exposure limit?")
+    assert bad["degraded"] and "rate limited" in bad["llm_error"]
+
+
+def test_hybrid_baseline_parses_fullwidth_citations():
+    from agent.baselines import HybridRAG
+    from retrieval.retriever import Retriever
+    r = HybridRAG(Retriever(), FakeLLM(answer="The limit is 20 percent \u30101\u3011.")).run("What is the single counterparty exposure limit?")
+    assert r["citations"] and "\u3010" not in r["answer"]
+
+
 def test_loops_are_bounded():
     class NeverSufficient(FakeLLM):
         def generate(self, system, user, json_mode=False, max_tokens=600):
