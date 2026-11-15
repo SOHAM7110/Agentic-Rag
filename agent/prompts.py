@@ -25,10 +25,15 @@ Rules:
 2. Use only information in the passages or the tool results. Never use outside knowledge.
 3. If the passages do not contain the answer, reply with exactly: INSUFFICIENT_EVIDENCE
 4. If the evidence is partial or ambiguous, say so explicitly ("The documents only state ...").
-5. Be concise: 1-3 sentences."""
+5. Be concise: 1-3 sentences.
+6. Check that every number belongs to the thing asked about (e.g. a group limit is not a single-counterparty limit, and a paragraph number such as '15.20' is not a value). Prefer exact figures from the passages."""
 
-VERIFY_SYSTEM = """You are a strict fact-checker. For each numbered claim, decide whether it is fully supported by the
-passages cited for it. Return JSON: {"results": [{"id": int, "supported": true|false}]}."""
+VERIFY_SYSTEM = """You are a fact-checker. For each numbered claim, decide whether it is supported.
+A claim is SUPPORTED if (a) a cited passage states it, or (b) it follows directly from the passages together with facts
+stated in the question and any tool results, by simple logic, comparison or arithmetic (e.g. a threshold in a passage compared
+with numbers given in the question; a calculator result computed from passage values).
+A claim is NOT supported if it adds a fact that no passage, question or tool result contains, or contradicts them.
+Return JSON: {"results": [{"id": int, "supported": true|false}]}."""
 
 JUDGE_CORRECT_SYSTEM = """You grade an answer against a gold answer.
 Rubric: 1 = the answer contains the same key facts/numbers as the gold answer and does not contradict it (extra correct

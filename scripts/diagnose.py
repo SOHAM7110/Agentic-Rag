@@ -27,3 +27,5 @@ for g in rows:
         extra = ""
         if t["node"] == "retrieve": extra = "  coverage=" + str([(c["coverage"], c["aspect_ok"]) for c in t["data"].get("coverage", [])])
         print(f"   {t['step']:>2}. {t['node']:<8} {t['summary'][:170]}{extra}")
+        for dc in t.get("data", {}).get("dropped_claims", []): print(f"        DROPPED CLAIM: {dc}")
+        if t["node"] == "verify" and t.get("data", {}).get("llm_flags") is not None: print(f"        verifier verdicts: {t['data']['llm_flags']}")

@@ -44,39 +44,39 @@
  },
  "systems": {
   "agent": {
-   "n": 10,
-   "correctness": 0.4,
-   "correctness_answerable": 0.3333333333333333,
+   "n": 15,
+   "correctness": 0.8666666666666667,
+   "correctness_answerable": 0.8571428571428571,
    "faithfulness": 1.0,
-   "citation_hit": 0.2222222222222222,
-   "cited_contains_answer": 0.3333333333333333,
-   "refusal_precision": 0.14285714285714285,
+   "citation_hit": 0.7857142857142857,
+   "cited_contains_answer": 0.5714285714285714,
+   "refusal_precision": 0.3333333333333333,
    "refusal_recall": 1.0,
-   "refusal_f1": 0.25,
-   "false_refusals": 6,
-   "avg_steps": 6.6,
-   "avg_loops": 1.2,
+   "refusal_f1": 0.5,
+   "false_refusals": 2,
+   "avg_steps": 6.4,
+   "avg_loops": 1.1333333333333333,
    "tool_success": 1.0,
    "termination": 1.0,
-   "p50_ms": 24094.3,
-   "p95_ms": 30224.0,
-   "tokens": 857.6,
+   "p50_ms": 1602.3,
+   "p95_ms": 30171.7,
+   "tokens": 879.2,
    "degraded": 0,
    "by_type": {
-    "single": 0.5,
-    "multihop": 0.5,
-    "numerical": 0.0,
+    "single": 0.8571428571428571,
+    "multihop": 0.6666666666666666,
+    "numerical": 1.0,
     "unanswerable": 1.0,
-    "ambiguous": 0.0
+    "ambiguous": 1.0
    },
    "by_type_latency": {
-    "single": 22653.375,
-    "multihop": 24113.9,
-    "numerical": 26226.86666666667,
-    "unanswerable": 30224.0,
-    "ambiguous": 0.0
+    "single": 5882.014285714286,
+    "multihop": 12440.366666666667,
+    "numerical": 15770.95,
+    "unanswerable": 3636.5,
+    "ambiguous": 12253.2
    }
   }
  },
- "n_questions": 10
+ "n_questions": 15
 }

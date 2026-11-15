@@ -348,7 +348,7 @@ class Agent:
         llm_flags = None
         if not self.llm.offline:
             tools_txt = "\n".join(f"TOOL RESULT {r['tool']}({r['args']}) = {r['output']}" for r in st.get("tool_results", []) if r["ok"])
-            user = "Passages:\n" + "\n".join(f"[{i}] {t}" for i, t in enumerate(pas, 1)) + (f"\n\nTool results (computed from the passages; arithmetic is correct):\n{tools_txt}" if tools_txt else "") + "\n\nClaims:\n" + "\n".join(
+            user = f"Question (facts stated in the question are given and may be relied on): {st['question']}\n\nPassages:\n" + "\n".join(f"[{i}] {t}" for i, t in enumerate(pas, 1)) + (f"\n\nTool results (computed from the passages; arithmetic is correct):\n{tools_txt}" if tools_txt else "") + "\n\nClaims:\n" + "\n".join(
                 f"{i}. {c['text']} (cited: {c['cites']})" for i, c in enumerate(st["claims"], 1))
             out = self._llm(st, P.VERIFY_SYSTEM, user, lambda: None)
             if out and isinstance(out.get("results"), list):
@@ -369,11 +369,13 @@ class Agent:
         if not kept:
             return {"answer": "I can't answer this reliably: none of the draft claims were supported by the cited passages.",
                     "claims": [], "refused": True, "verified": False,
-                    "trace": self._trace(st, "verify", f"all {len(dropped)} claim(s) unsupported -> refuse", t0)}
+                    "trace": self._trace(st, "verify", f"all {len(dropped)} claim(s) unsupported -> refuse", t0,
+                                         dropped_claims=[f"{c['text'][:220]} (cites {c['cites']})" for c in dropped], llm_flags=llm_flags)}
         text = " ".join(c["text"] + "".join(f"[{n}]" for n in c["cites"]) for c in kept)
         msg = "all claims supported" if not dropped else f"revised: dropped {len(dropped)} unsupported claim(s)"
         return {"answer": text, "claims": kept, "verified": not dropped,
-                "trace": self._trace(st, "verify", msg, t0, kept=len(kept), dropped=len(dropped))}
+                "trace": self._trace(st, "verify", msg, t0, kept=len(kept), dropped=len(dropped),
+                                     dropped_claims=[f"{c['text'][:220]} (cites {c['cites']})" for c in dropped], llm_flags=llm_flags)}
 
     # ------------------------------------------------------------------ graph
     def _build(self):

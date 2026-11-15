@@ -176,6 +176,7 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--retrieval-only", action="store_true", help="only the retrieval ablation (no LLM calls at all)")
     ap.add_argument("--systems", default="", help="comma list of: naive_rag,hybrid_rerank_rag,agent (default: all)")
+    ap.add_argument("--exclude", default="", help="comma list of question ids to leave out (e.g. the ones used while debugging)")
     ap.add_argument("--limit", type=int, default=0, help="evaluate only N questions spread across the set (saves free-tier quota)")
     a = ap.parse_args()
     t0 = time.time(); RESULTS_DIR.mkdir(exist_ok=True)
@@ -189,6 +190,9 @@ def main():
         for m in MODES:
             x = abl[m]; out.append(f"| {MODE_LABEL[m]} | {pc(x['hit@1'])} | {pc(x['hit@3'])} | {pc(x['hit@5'])} | {pc(x['recall@3'])} | {pc(x['recall@5'])} | {x['mrr']:.3f} |")
         md = "\n".join(out); (RESULTS_DIR / "retrieval_only.md").write_text(md + "\n"); print(md); return
+    if a.exclude:
+        skip = {s.strip() for s in a.exclude.split(",") if s.strip()}
+        gold = [g for g in gold if g["id"] not in skip]
     gold = spread(gold, a.limit)
     names = [s.strip() for s in a.systems.split(",") if s.strip()]
     gen, jud = get_llm(), get_llm(JUDGE_PROVIDER, JUDGE_MODEL)
