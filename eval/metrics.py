@@ -1,6 +1,6 @@
 """Pure-python metric functions (retrieval, citations, refusal, ops)."""
 from __future__ import annotations
-import re, statistics as st
+import math, re, statistics as st
 
 
 def chunk_pages(c: dict) -> set[int]:
@@ -70,3 +70,20 @@ def pct(xs, q):
 
 
 def mean(xs): return sum(xs) / len(xs) if xs else 0.0
+
+
+def wilson(k: int, n: int, z: float = 1.96) -> tuple[float, float]:
+    """95% Wilson score interval for a proportion k/n (sensible for small n)."""
+    if n == 0: return (0.0, 0.0)
+    p = k / n; d = 1 + z * z / n
+    c = (p + z * z / (2 * n)) / d
+    h = z * math.sqrt(p * (1 - p) / n + z * z / (4 * n * n)) / d
+    return (max(0.0, c - h), min(1.0, c + h))
+
+
+def sign_test_p(b: int, c: int) -> float:
+    """Exact two-sided sign test on discordant pairs: b = A right/B wrong, c = B right/A wrong."""
+    n = b + c
+    if n == 0: return 1.0
+    k = min(b, c)
+    return min(1.0, 2 * sum(math.comb(n, i) for i in range(k + 1)) / 2 ** n)

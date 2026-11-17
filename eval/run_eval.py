@@ -87,22 +87,34 @@ def summarize(per_q):
     return S
 
 
-def findings(S):
+def findings(S, per_q):
     if not all(k in S for k in SYS_LABEL):
         return ["(findings need all three systems - run without --systems)"]
     a, h, n = S["agent"], S["hybrid_rerank_rag"], S["naive_rag"]
-    out = []
+    by = {s: {r["id"]: r for r in per_q if r["system"] == s} for s in SYS_LABEL}
+    ids = sorted(set.intersection(*[set(v) for v in by.values()]))
+    ok = lambda s, i: by[s][i]["correct"] >= 0.5
     p = lambda x: f"{100 * x:.0f}%"
+    out = [f"All comparisons below use the **{len(ids)} questions that every system completed**."]
+    for x, y, lx, ly in [("agent", "hybrid_rerank_rag", "agent", "hybrid+rerank"), ("agent", "naive_rag", "agent", "naive RAG"),
+                         ("hybrid_rerank_rag", "naive_rag", "hybrid+rerank", "naive RAG")]:
+        xo = sum(ok(x, i) and not ok(y, i) for i in ids); yo = sum(ok(y, i) and not ok(x, i) for i in ids)
+        pv = M.sign_test_p(xo, yo)
+        verdict = "a statistically detectable difference" if pv < 0.05 else "no statistically detectable difference"
+        out.append(f"Paired, {lx} vs {ly}: {lx} right & {ly} wrong on {xo} question(s); {ly} right & {lx} wrong on {yo} (exact sign test p={pv:.2f}) - {verdict}.")
     for t, nice in [("multihop", "multi-hop / comparison"), ("numerical", "numerical"), ("single", "single-fact"),
-                    ("ambiguous", "ambiguous-wording"), ("unanswerable", "unanswerable (refusal)")]:
-        d = a["by_type"][t] - h["by_type"][t]
-        if abs(d) < 0.03: out.append(f"On **{nice}** questions the agent is on par with single-shot hybrid+rerank ({p(a['by_type'][t])} vs {p(h['by_type'][t])}): no measurable gain.")
-        elif d > 0: out.append(f"On **{nice}** questions the agent beats single-shot hybrid+rerank by {100 * d:.0f} points ({p(a['by_type'][t])} vs {p(h['by_type'][t])}).")
-        else: out.append(f"On **{nice}** questions the agent is *worse* than single-shot hybrid+rerank by {-100 * d:.0f} points ({p(a['by_type'][t])} vs {p(h['by_type'][t])}).")
-    out.append(f"Cost of the agent: {a['avg_steps']:.1f} graph steps and {a['tokens']:.0f} (estimated) tokens per query vs {h['tokens']:.0f} for hybrid+rerank "
-               f"({a['tokens'] / max(h['tokens'], 1):.1f}x); p95 latency {a['p95_ms']:.0f} ms vs {h['p95_ms']:.0f} ms.")
-    out.append(f"Naive RAG never refuses (refusal recall {p(n['refusal_recall'])}); the agent reaches {p(a['refusal_recall'])} recall at {p(a['refusal_precision'])} precision, "
-               f"with {a['false_refusals']} false refusals on answerable questions.")
+                    ("ambiguous", "tricky-wording"), ("unanswerable", "unanswerable (refusal)")]:
+        it = [i for i in ids if by["agent"][i]["type"] == t]
+        if not it:
+            out.append(f"**{nice}**: no questions of this type were completed by all systems yet."); continue
+        ka = sum(ok("agent", i) for i in it); kh = sum(ok("hybrid_rerank_rag", i) for i in it); nn = len(it)
+        d = ka - kh
+        tag = "within one question - noise" if abs(d) <= 1 else ("agent ahead" if d > 0 else "agent behind")
+        out.append(f"**{nice}** ({nn} questions): agent {ka}/{nn} vs hybrid+rerank {kh}/{nn} ({tag}).")
+    out.append(f"Cost of the agent: {a['avg_steps']:.1f} graph steps and {a['tokens']:.0f} tokens per query vs {h['tokens']:.0f} for hybrid+rerank "
+               f"({a['tokens'] / max(h['tokens'], 1):.1f}x); p95 latency {a['p95_ms']:.0f} ms vs {h['p95_ms']:.0f} ms (latency is distorted by caching/throttling).")
+    out.append(f"Naive RAG never refuses (refusal recall {p(n['refusal_recall'])}); hybrid+rerank reaches {p(h['refusal_recall'])} recall at {p(h['refusal_precision'])} precision "
+               f"({h['false_refusals']} false refusals); the agent {p(a['refusal_recall'])} at {p(a['refusal_precision'])} ({a['false_refusals']} false refusals).")
     return out
 
 
@@ -134,13 +146,22 @@ def tables(abl, n_ans, S, per_q, meta, gold_n):
         vals = [S[s][key] for s in names]
         L.append(f"| {label} | " + " | ".join("n/a" if (key in ("citation_hit", "cited_contains_answer") and s == "naive_rag") else "-" if v is None else f(v)
                                               for s, v in zip(names, vals)) + " |")
+    ci = []
+    for s in names:
+        rs = [r for r in per_q if r["system"] == s]; k = sum(r["correct"] >= 0.5 for r in rs); lo, hi = M.wilson(k, len(rs))
+        ci.append(f"{k}/{len(rs)} ({100 * lo:.0f}-{100 * hi:.0f}%)")
+    L.append("| Correct / n (95% Wilson interval) | " + " | ".join(ci) + " |")
     L.append("\n*Naive RAG is not asked to cite (its citation metrics are n/a). Hybrid and the agent use the same citation parser and the same post-hoc attribution rule. Latency includes any client-side throttling and excludes cached calls; use a cold run for latency claims.*")
     L.append("\n### Correctness by question type (%)\n")
     L.append("| System | " + " | ".join(TYPES) + " |\n|---|" + "---|" * len(TYPES))
     for s in names:
-        L.append(f"| {SYS_LABEL[s]} | " + " | ".join(pc(S[s]['by_type'][t]) if any(r['system'] == s and r['type'] == t for r in per_q) else '-' for t in TYPES) + " |")
+        cells = []
+        for t in TYPES:
+            rs = [r for r in per_q if r["system"] == s and r["type"] == t]
+            cells.append(f"{100 * sum(r['correct'] >= 0.5 for r in rs) / len(rs):.0f} ({sum(r['correct'] >= 0.5 for r in rs)}/{len(rs)})" if rs else "-")
+        L.append(f"| {SYS_LABEL[s]} | " + " | ".join(cells) + " |")
     L.append("\n### Findings (generated from the run)\n")
-    for f in findings(S): L.append(f"- {f}")
+    for f in findings(S, per_q): L.append(f"- {f}")
     jf = RESULTS_DIR / "judge_agreement.json"
     if jf.exists():
         j = json.loads(jf.read_text()); L.append(f"\n**Judge vs. human:** {100 * j['agreement']:.0f}% agreement, Cohen's kappa {j['cohen_kappa']} on {j['n']} hand-graded answers.")
@@ -188,6 +209,7 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--retrieval-only", action="store_true", help="only the retrieval ablation (no LLM calls at all)")
     ap.add_argument("--systems", default="", help="comma list of: naive_rag,hybrid_rerank_rag,agent (default: all)")
+    ap.add_argument("--types", default="", help="comma list of question types to evaluate (single,multihop,numerical,unanswerable,ambiguous)")
     ap.add_argument("--exclude", default="", help="comma list of question ids to leave out (e.g. the ones used while debugging)")
     ap.add_argument("--limit", type=int, default=0, help="evaluate only N questions spread across the set (saves free-tier quota)")
     a = ap.parse_args()
@@ -202,6 +224,9 @@ def main():
         for m in MODES:
             x = abl[m]; out.append(f"| {MODE_LABEL[m]} | {pc(x['hit@1'])} | {pc(x['hit@3'])} | {pc(x['hit@5'])} | {pc(x['recall@3'])} | {pc(x['recall@5'])} | {x['mrr']:.3f} |")
         md = "\n".join(out); (RESULTS_DIR / "retrieval_only.md").write_text(md + "\n"); print(md); return
+    if a.types:
+        want = {s.strip() for s in a.types.split(",") if s.strip()}
+        gold = [g for g in gold if g["type"] in want]
     if a.exclude:
         skip = {s.strip() for s in a.exclude.split(",") if s.strip()}
         gold = [g for g in gold if g["id"] not in skip]
@@ -213,11 +238,15 @@ def main():
     judge = Judge(jud)
     per_q, stop = run_systems(r, gold, gen, judge, names)
     if not per_q: raise SystemExit(stop or 'nothing evaluated')
+    ids_by_sys = [{r["id"] for r in per_q if r["system"] == s} for s in {r["system"] for r in per_q}]
+    common = set.intersection(*ids_by_sys) if ids_by_sys else set()
+    per_all, per_q = per_q, [r for r in per_q if r["id"] in common]        # fair comparison: only questions finished by every system
+    if len(common) < len(gold): stop = stop or f"{len(common)} of {len(gold)} requested questions were completed by every system; the table uses only those."
     S = summarize(per_q)
     meta = {"gen": gen.name, "judge": jud.name + (" (rule-based)" if jud.offline else ""), "retrieval": ret_meta}
     partial = bool(a.limit or names or stop)
     (RESULTS_DIR / ("results_partial.json" if partial else "results.json")).write_text(json.dumps({"meta": meta, "retrieval_ablation": abl, "systems": S, "n_questions": len(gold)}, indent=1))
-    (RESULTS_DIR / "per_question.jsonl").write_text("\n".join(json.dumps(x, default=str) for x in per_q) + "\n")
+    (RESULTS_DIR / "per_question.jsonl").write_text("\n".join(json.dumps(x, default=str) for x in per_all) + "\n")
     md = tables(abl, n_ans, S, per_q, meta, len(gold))
     if stop: md = f"> **Run stopped early - results below cover only the questions finished.** {stop}\n\n" + md
     (RESULTS_DIR / ("results_partial.md" if partial else "results.md")).write_text(md + "\n")

@@ -50,6 +50,28 @@ def test_refusal_scores():
     assert r["refusal_precision"] == 0.5 and r["refusal_recall"] == 0.5 and r["false_refusals"] == 1
 
 
+def test_wilson_and_sign_test():
+    lo, hi = M.wilson(22, 26); assert 0.65 < lo < 0.72 and 0.93 < hi < 0.97
+    assert M.sign_test_p(1, 0) == 1.0 and M.sign_test_p(0, 0) == 1.0
+    assert M.sign_test_p(10, 0) < 0.01 and abs(M.sign_test_p(5, 5) - 1.0) < 1e-9
+
+
+def test_partial_run_compares_only_common_questions():
+    import eval.run_eval as R
+    rows = []
+    for sysname, ids in [("naive_rag", range(6)), ("hybrid_rerank_rag", range(6)), ("agent", range(3))]:
+        for i in ids:
+            rows.append({"system": sysname, "id": f"q{i}", "type": "single", "question": "", "gold_answer": "", "answer": "", "refused": False,
+                         "correct": 1.0, "judge_reason": "", "faithfulness": 1.0, "citation_hit": 1.0, "citation_precision": 1.0,
+                         "cited_contains_answer": 1.0, "tokens": 10, "latency_ms": 5, "steps": 2, "loops": 1, "tool_calls": [],
+                         "terminated": True, "degraded": False, "n_citations": 1})
+    common = set.intersection(*[{r["id"] for r in rows if r["system"] == s} for s in ("naive_rag", "hybrid_rerank_rag", "agent")])
+    per = [r for r in rows if r["id"] in common]
+    assert len(common) == 3 and len(per) == 9
+    text = " ".join(R.findings(R.summarize(per), per))
+    assert "3 questions that every system completed" in text and "numerical**: no questions" in text
+
+
 def test_agent_end_to_end():
     from api.service import service
     a = service.query("What is the helpline number for Kisan Samriddhi Yojana?")
