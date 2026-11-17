@@ -89,6 +89,11 @@ class Agent:
                    "tokens": self._rs()["tokens"], "data": data})
         return tr
 
+    def _lim(self, st) -> int:
+        """How many evidence chunks the LLM sees - identical for grading and answering, so the grader never approves
+        evidence the answerer cannot see. 3 per sub-query when there are several."""
+        return 8 if self.llm.offline else max(PROMPT_PASSAGES, 3 * len(st.get("queries", [])))
+
     def _ev_chunks(self, st) -> list[dict]:
         return [self.r.chunks[e["idx"]] for e in st.get("evidence", [])]
 
@@ -115,6 +120,11 @@ class Agent:
         ents, asp = plan["entities"], plan["aspect"]
         label = FACT_SPEC[asp][1] if asp else ""
         subs = plan.get("sub_questions") or []
+        if len(ents) >= 2:       # named documents: search INSIDE each one (essential when documents are near-duplicates)
+            topic = H.strip_entity_words(q, ents, self.docs)
+            return [{"q": f"{self.docs[e]['title']} {label}" if label else topic, "doc": e} for e in ents[:4]]
+        if len(ents) == 1 and not subs:
+            return [{"q": H.strip_entity_words(q, ents, self.docs), "doc": ents[0]}]
         if len(subs) >= 2 or (subs and plan["type"] != "single"):     # LLM decomposition: one retrieval per sub-question
             return [{"q": s, "doc": None} for s in subs]
         if plan["descriptor"]:
@@ -181,7 +191,7 @@ class Agent:
         if self.llm.offline:
             out = h; self._llm(st, P.GRADE_SYSTEM, st["question"], lambda: h)
         else:
-            user = f"Question: {st['question']}\n\nPassages:\n{P.format_passages(self._ev_chunks(st))}"
+            user = f"Question: {st['question']}\n\nPassages:\n{P.format_passages(self._ev_chunks(st)[:self._lim(st)])}"
             out = self._llm(st, P.GRADE_SYSTEM, user, lambda: h)
             floor = min((c["coverage"] for c in cov), default=0)
             out = {"sufficient": bool(out.get("sufficient")) and floor >= GRADE_FLOOR, "reason": out.get("reason", "")}
@@ -251,7 +261,7 @@ class Agent:
 
     # ---- answer
     def _passages(self, st) -> list[dict]:
-        lim = 8 if self.llm.offline else PROMPT_PASSAGES
+        lim = self._lim(st)
         chunks = self._ev_chunks(st)[:lim]
         ids = {c["id"] for c in chunks}
         for tr in st.get("tool_results", []):          # chunks backing tool outputs must be citable

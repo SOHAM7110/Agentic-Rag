@@ -1,55 +1,55 @@
 {
  "meta": {
-  "gen": "offline-rules",
-  "judge": "offline-rules (rule-based)",
-  "retrieval": "lsa(tfidf+svd) + BM25 + lexical-rerank; store=numpy"
+  "gen": "groq:openai/gpt-oss-120b",
+  "judge": "groq:openai/gpt-oss-20b",
+  "retrieval": "st:BAAI/bge-small-en-v1.5 + BM25 + cross-encoder:cross-encoder/ms-marco-MiniLM-L-6-v2; store=chroma"
  },
  "retrieval_ablation": {
   "dense": {
-   "hit@1": 0.6323529411764706,
-   "recall@1": 0.5147058823529411,
-   "hit@3": 0.8823529411764706,
-   "recall@3": 0.8014705882352942,
-   "hit@5": 0.9264705882352942,
-   "recall@5": 0.8823529411764706,
-   "mrr": 0.7606792717086834
+   "hit@1": 0.5641025641025641,
+   "recall@1": 0.532051282051282,
+   "hit@3": 0.8589743589743589,
+   "recall@3": 0.8141025641025641,
+   "hit@5": 0.9102564102564102,
+   "recall@5": 0.8717948717948718,
+   "mrr": 0.7120879120879121
   },
   "bm25": {
-   "hit@1": 0.6911764705882353,
-   "recall@1": 0.5588235294117647,
-   "hit@3": 0.8823529411764706,
-   "recall@3": 0.7941176470588235,
-   "hit@5": 0.9264705882352942,
-   "recall@5": 0.8529411764705882,
-   "mrr": 0.7935632586367881
+   "hit@1": 0.5256410256410257,
+   "recall@1": 0.4935897435897436,
+   "hit@3": 0.7307692307692307,
+   "recall@3": 0.6858974358974359,
+   "hit@5": 0.8846153846153846,
+   "recall@5": 0.8589743589743589,
+   "mrr": 0.6554639804639805
   },
   "hybrid": {
-   "hit@1": 0.6470588235294118,
-   "recall@1": 0.5220588235294118,
-   "hit@3": 0.9117647058823529,
-   "recall@3": 0.8088235294117647,
-   "hit@5": 0.9411764705882353,
-   "recall@5": 0.8970588235294118,
-   "mrr": 0.7730742296918768
+   "hit@1": 0.6025641025641025,
+   "recall@1": 0.5641025641025641,
+   "hit@3": 0.8205128205128205,
+   "recall@3": 0.7948717948717948,
+   "hit@5": 0.9230769230769231,
+   "recall@5": 0.8974358974358975,
+   "mrr": 0.7386904761904761
   },
   "hybrid_rerank": {
-   "hit@1": 0.8235294117647058,
-   "recall@1": 0.6838235294117647,
-   "hit@3": 0.8970588235294118,
-   "recall@3": 0.8088235294117647,
-   "hit@5": 0.9264705882352942,
-   "recall@5": 0.875,
-   "mrr": 0.8704014939309057
+   "hit@1": 0.7564102564102564,
+   "recall@1": 0.7051282051282052,
+   "hit@3": 0.8974358974358975,
+   "recall@3": 0.8653846153846154,
+   "hit@5": 0.9871794871794872,
+   "recall@5": 0.9615384615384616,
+   "mrr": 0.8377136752136752
   }
  },
  "systems": {
   "naive_rag": {
-   "n": 80,
-   "correctness": 0.0875,
-   "correctness_answerable": 0.10294117647058823,
-   "faithfulness": 1.0,
-   "citation_hit": 0.6323529411764706,
-   "cited_contains_answer": 0.3382352941176471,
+   "n": 14,
+   "correctness": 0.0,
+   "correctness_answerable": 0.0,
+   "faithfulness": 0.19047619047619047,
+   "citation_hit": 0.0,
+   "cited_contains_answer": 0.0,
    "refusal_precision": 0.0,
    "refusal_recall": 0.0,
    "refusal_f1": 0.0,
@@ -58,93 +58,93 @@
    "avg_loops": 1.0,
    "tool_success": null,
    "termination": 1.0,
-   "p50_ms": 0.3,
-   "p95_ms": 3.9,
-   "tokens": 371.85,
+   "p50_ms": 19.7,
+   "p95_ms": 6027.9,
+   "tokens": 811.6428571428571,
    "degraded": 0,
    "by_type": {
-    "single": 0.25,
+    "single": 0.0,
     "multihop": 0.0,
     "numerical": 0.0,
     "unanswerable": 0.0,
     "ambiguous": 0.0
    },
    "by_type_latency": {
-    "single": 0.6035714285714286,
-    "multihop": 0.40499999999999997,
-    "numerical": 0.4666666666666666,
-    "unanswerable": 3.7583333333333333,
-    "ambiguous": 0.3499999999999999
+    "single": 0.0,
+    "multihop": 0.0,
+    "numerical": 0.0,
+    "unanswerable": 1753.3714285714284,
+    "ambiguous": 0.0
    }
   },
   "hybrid_rerank_rag": {
-   "n": 80,
-   "correctness": 0.35,
-   "correctness_answerable": 0.3382352941176471,
-   "faithfulness": 1.0,
-   "citation_hit": 0.6029411764705882,
-   "cited_contains_answer": 0.45588235294117646,
-   "refusal_precision": 0.29411764705882354,
-   "refusal_recall": 0.4166666666666667,
-   "refusal_f1": 0.3448275862068966,
-   "false_refusals": 12,
-   "avg_steps": 2.0,
-   "avg_loops": 1.0,
-   "tool_success": null,
-   "termination": 1.0,
-   "p50_ms": 2.4,
-   "p95_ms": 4.4,
-   "tokens": 649.4875,
-   "degraded": 0,
-   "by_type": {
-    "single": 0.8214285714285714,
-    "multihop": 0.0,
-    "numerical": 0.0,
-    "unanswerable": 0.4166666666666667,
-    "ambiguous": 0.0
-   },
-   "by_type_latency": {
-    "single": 2.6357142857142857,
-    "multihop": 2.7749999999999995,
-    "numerical": 2.6333333333333333,
-    "unanswerable": 2.9083333333333328,
-    "ambiguous": 2.4499999999999997
-   }
-  },
-  "agent": {
-   "n": 80,
+   "n": 14,
    "correctness": 1.0,
-   "correctness_answerable": 1.0,
-   "faithfulness": 0.909313725490196,
-   "citation_hit": 1.0,
-   "cited_contains_answer": 0.6764705882352942,
+   "correctness_answerable": 0.0,
+   "faithfulness": 0.0,
+   "citation_hit": 0.0,
+   "cited_contains_answer": 0.0,
    "refusal_precision": 1.0,
    "refusal_recall": 1.0,
    "refusal_f1": 1.0,
    "false_refusals": 0,
-   "avg_steps": 6.9,
-   "avg_loops": 1.3,
-   "tool_success": 0.9270833333333334,
+   "avg_steps": 2.0,
+   "avg_loops": 1.0,
+   "tool_success": null,
    "termination": 1.0,
-   "p50_ms": 5.9,
-   "p95_ms": 10.7,
-   "tokens": 839.0875,
+   "p50_ms": 953.9,
+   "p95_ms": 5764.1,
+   "tokens": 1306.642857142857,
    "degraded": 0,
    "by_type": {
-    "single": 1.0,
-    "multihop": 1.0,
-    "numerical": 1.0,
+    "single": 0.0,
+    "multihop": 0.0,
+    "numerical": 0.0,
     "unanswerable": 1.0,
-    "ambiguous": 1.0
+    "ambiguous": 0.0
    },
    "by_type_latency": {
-    "single": 2.6214285714285714,
-    "multihop": 8.48,
-    "numerical": 4.416666666666666,
-    "unanswerable": 10.85,
-    "ambiguous": 6.350000000000001
+    "single": 0.0,
+    "multihop": 0.0,
+    "numerical": 0.0,
+    "unanswerable": 2289.0214285714287,
+    "ambiguous": 0.0
+   }
+  },
+  "agent": {
+   "n": 14,
+   "correctness": 1.0,
+   "correctness_answerable": 0.0,
+   "faithfulness": 0.0,
+   "citation_hit": 0.0,
+   "cited_contains_answer": 0.0,
+   "refusal_precision": 1.0,
+   "refusal_recall": 1.0,
+   "refusal_f1": 1.0,
+   "false_refusals": 0,
+   "avg_steps": 12.0,
+   "avg_loops": 3.0,
+   "tool_success": null,
+   "termination": 1.0,
+   "p50_ms": 29316.7,
+   "p95_ms": 36142.1,
+   "tokens": 5676.071428571428,
+   "degraded": 0,
+   "by_type": {
+    "single": 0.0,
+    "multihop": 0.0,
+    "numerical": 0.0,
+    "unanswerable": 1.0,
+    "ambiguous": 0.0
+   },
+   "by_type_latency": {
+    "single": 0.0,
+    "multihop": 0.0,
+    "numerical": 0.0,
+    "unanswerable": 25171.828571428574,
+    "ambiguous": 0.0
    }
   }
  },
- "n_questions": 80
+ "n_questions": 14
 }

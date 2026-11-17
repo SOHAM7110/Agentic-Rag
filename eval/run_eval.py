@@ -109,12 +109,17 @@ def findings(S, per_q):
             out.append(f"**{nice}**: no questions of this type were completed by all systems yet."); continue
         ka = sum(ok("agent", i) for i in it); kh = sum(ok("hybrid_rerank_rag", i) for i in it); nn = len(it)
         d = ka - kh
-        tag = "within one question - noise" if abs(d) <= 1 else ("agent ahead" if d > 0 else "agent behind")
+        tag = "within one question - noise" if abs(d) <= 1 else f"{'agent' if d > 0 else 'hybrid+rerank'} ahead by {abs(d)} question(s) - small sample, not tested on its own"
         out.append(f"**{nice}** ({nn} questions): agent {ka}/{nn} vs hybrid+rerank {kh}/{nn} ({tag}).")
     out.append(f"Cost of the agent: {a['avg_steps']:.1f} graph steps and {a['tokens']:.0f} tokens per query vs {h['tokens']:.0f} for hybrid+rerank "
                f"({a['tokens'] / max(h['tokens'], 1):.1f}x); p95 latency {a['p95_ms']:.0f} ms vs {h['p95_ms']:.0f} ms (latency is distorted by caching/throttling).")
-    out.append(f"Naive RAG never refuses (refusal recall {p(n['refusal_recall'])}); hybrid+rerank reaches {p(h['refusal_recall'])} recall at {p(h['refusal_precision'])} precision "
-               f"({h['false_refusals']} false refusals); the agent {p(a['refusal_recall'])} at {p(a['refusal_precision'])} ({a['false_refusals']} false refusals).")
+    n_unans = sum(1 for i in ids if by["agent"][i]["type"] == "unanswerable")
+    if n_unans:
+        out.append(f"Refusal ({n_unans} unanswerable questions): naive RAG recall {p(n['refusal_recall'])}; hybrid+rerank recall {p(h['refusal_recall'])} at {p(h['refusal_precision'])} precision "
+                   f"({h['false_refusals']} false refusals); the agent recall {p(a['refusal_recall'])} at {p(a['refusal_precision'])} ({a['false_refusals']} false refusals).")
+    else:
+        out.append(f"No unanswerable questions in this subset, so refusal precision/recall are n/a. False refusals of answerable questions: naive {n['false_refusals']}, "
+                   f"hybrid+rerank {h['false_refusals']}, agent {a['false_refusals']}.")
     return out
 
 
@@ -144,7 +149,9 @@ def tables(abl, n_ans, S, per_q, meta, gold_n):
                ("Latency p95 (ms)", "p95_ms", lambda x: f"{x:.0f}"), ("Tokens / query (est.)", "tokens", lambda x: f"{x:.0f}")]
     for label, key, f in rowdefs:
         vals = [S[s][key] for s in names]
-        L.append(f"| {label} | " + " | ".join("n/a" if (key in ("citation_hit", "cited_contains_answer") and s == "naive_rag") else "-" if v is None else f(v)
+        no_unans = not any(r["type"] == "unanswerable" for r in per_q)
+        L.append(f"| {label} | " + " | ".join("n/a" if ((key in ("citation_hit", "cited_contains_answer") and s == "naive_rag")
+                                                       or (key in ("refusal_precision", "refusal_recall") and no_unans)) else "-" if v is None else f(v)
                                               for s, v in zip(names, vals)) + " |")
     ci = []
     for s in names:

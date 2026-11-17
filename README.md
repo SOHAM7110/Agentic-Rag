@@ -40,55 +40,61 @@ Real LLM run (free tier): `export GROQ_API_KEY=... HF_TOKEN=...; LLM_PROVIDER=gr
 
 ## Results
 <!-- RESULTS:START -->
-> **Read this first.** This run used the *offline rule-based backend* (no LLM) on a *synthetic* corpus. It proves the pipeline, tools, graph, metrics and refusal logic work end to end, but it is **not evidence of answer quality**: the single-shot baselines can only extract sentences (they cannot compare or do arithmetic) and the agent's rules were written by the same author as the question templates. Re-run with `LLM_PROVIDER=groq JUDGE_PROVIDER=hf make eval` on your real corpus and hand-written golden set for numbers you can quote.
-
-*80 golden questions (68 answerable). Generator: `offline-rules`; judge: `offline-rules (rule-based)`; retrieval: `lsa(tfidf+svd) + BM25 + lexical-rerank; store=numpy`; graph engine: `minigraph`.*
+*14 golden questions (78 answerable). Generator: `groq:openai/gpt-oss-120b`; judge: `groq:openai/gpt-oss-20b`; retrieval: `st:BAAI/bge-small-en-v1.5 + BM25 + cross-encoder:cross-encoder/ms-marco-MiniLM-L-6-v2; store=chroma`; graph engine: `langgraph`.*
 
 ### Retrieval ablation (answerable questions, page-level gold)
 
 | Retriever | Hit@1 | Hit@3 | Hit@5 | Recall@3 | Recall@5 | MRR |
 |---|---|---|---|---|---|---|
-| Dense only | 63.2 | 88.2 | 92.6 | 80.1 | 88.2 | 0.761 |
-| BM25 only | 69.1 | 88.2 | 92.6 | 79.4 | 85.3 | 0.794 |
-| Hybrid (RRF) | 64.7 | 91.2 | 94.1 | 80.9 | 89.7 | 0.773 |
-| Hybrid + rerank | 82.4 | 89.7 | 92.6 | 80.9 | 87.5 | 0.870 |
+| Dense only | 56.4 | 85.9 | 91.0 | 81.4 | 87.2 | 0.712 |
+| BM25 only | 52.6 | 73.1 | 88.5 | 68.6 | 85.9 | 0.655 |
+| Hybrid (RRF) | 60.3 | 82.1 | 92.3 | 79.5 | 89.7 | 0.739 |
+| Hybrid + rerank | 75.6 | 89.7 | 98.7 | 86.5 | 96.2 | 0.838 |
 
 ### Three-system comparison
 
-| Metric | Naive RAG | Hybrid + rerank | Full agent |
+| Metric | Naive RAG (dense top-3) | Hybrid + rerank (single shot) | Full agent |
 |---|---|---|---|
-| Correctness, all questions (%) | 8.8 | 35.0 | 100.0 |
-| Correctness, answerable only (%) | 10.3 | 33.8 | 100.0 |
-| Faithfulness (%) | 100.0 | 100.0 | 90.9 |
-| Citation hit (gold page cited) (%) | 63.2 | 60.3 | 100.0 |
-| Cited text contains answer (%) | 33.8 | 45.6 | 67.6 |
-| Refusal precision (%) | 0.0 | 29.4 | 100.0 |
-| Refusal recall (%) | 0.0 | 41.7 | 100.0 |
-| False refusals (count) | 0 | 12 | 0 |
-| Avg steps / question | 2.0 | 2.0 | 6.9 |
-| Tool-call success (%) | - | - | 92.7 |
+| Correctness, all questions (%) | 0.0 | 100.0 | 100.0 |
+| Correctness, answerable only (%) | 0.0 | 0.0 | 0.0 |
+| Faithfulness (%) | 19.0 | 0.0 | 0.0 |
+| Citation hit (gold page cited) (%) | n/a | 0.0 | 0.0 |
+| Cited text contains answer (%) | n/a | 0.0 | 0.0 |
+| Refusal precision (%) | 0.0 | 100.0 | 100.0 |
+| Refusal recall (%) | 0.0 | 100.0 | 100.0 |
+| False refusals (count) | 0 | 0 | 0 |
+| Avg steps / question | 2.0 | 2.0 | 12.0 |
+| Tool-call success (%) | - | - | - |
 | Loop termination (%) | 100.0 | 100.0 | 100.0 |
-| Latency p50 (ms) | 0 | 2 | 6 |
-| Latency p95 (ms) | 4 | 4 | 11 |
-| Tokens / query (est.) | 372 | 649 | 839 |
+| Degraded answers (LLM fell back to rules) | 0 | 0 | 0 |
+| Latency p50 (ms) | 20 | 954 | 29317 |
+| Latency p95 (ms) | 6028 | 5764 | 36142 |
+| Tokens / query (est.) | 812 | 1307 | 5676 |
+| Correct / n (95% Wilson interval) | 0/14 (0-22%) | 14/14 (78-100%) | 14/14 (78-100%) |
+
+*Naive RAG is not asked to cite (its citation metrics are n/a). Hybrid and the agent use the same citation parser and the same post-hoc attribution rule. Latency includes any client-side throttling and excludes cached calls; use a cold run for latency claims.*
 
 ### Correctness by question type (%)
 
 | System | single | multihop | numerical | unanswerable | ambiguous |
 |---|---|---|---|---|---|
-| Naive RAG (dense top-3) | 25.0 | 0.0 | 0.0 | 0.0 | 0.0 |
-| Hybrid + rerank (single shot) | 82.1 | 0.0 | 0.0 | 41.7 | 0.0 |
-| Full agent | 100.0 | 100.0 | 100.0 | 100.0 | 100.0 |
+| Naive RAG (dense top-3) | - | - | - | 0 (0/14) | - |
+| Hybrid + rerank (single shot) | - | - | - | 100 (14/14) | - |
+| Full agent | - | - | - | 100 (14/14) | - |
 
 ### Findings (generated from the run)
 
-- On **multi-hop / comparison** questions the agent beats single-shot hybrid+rerank by 100 points (100% vs 0%).
-- On **numerical** questions the agent beats single-shot hybrid+rerank by 100 points (100% vs 0%).
-- On **single-fact** questions the agent beats single-shot hybrid+rerank by 18 points (100% vs 82%).
-- On **ambiguous-wording** questions the agent beats single-shot hybrid+rerank by 100 points (100% vs 0%).
-- On **unanswerable (refusal)** questions the agent beats single-shot hybrid+rerank by 58 points (100% vs 42%).
-- Cost of the agent: 6.9 graph steps and 839 (estimated) tokens per query vs 649 for hybrid+rerank (1.3x); p95 latency 11 ms vs 4 ms.
-- Naive RAG never refuses (refusal recall 0%); the agent reaches 100% recall at 100% precision, with 0 false refusals on answerable questions.
+- All comparisons below use the **14 questions that every system completed**.
+- Paired, agent vs hybrid+rerank: agent right & hybrid+rerank wrong on 0 question(s); hybrid+rerank right & agent wrong on 0 (exact sign test p=1.00) - no statistically detectable difference.
+- Paired, agent vs naive RAG: agent right & naive RAG wrong on 14 question(s); naive RAG right & agent wrong on 0 (exact sign test p=0.00) - a statistically detectable difference.
+- Paired, hybrid+rerank vs naive RAG: hybrid+rerank right & naive RAG wrong on 14 question(s); naive RAG right & hybrid+rerank wrong on 0 (exact sign test p=0.00) - a statistically detectable difference.
+- **multi-hop / comparison**: no questions of this type were completed by all systems yet.
+- **numerical**: no questions of this type were completed by all systems yet.
+- **single-fact**: no questions of this type were completed by all systems yet.
+- **tricky-wording**: no questions of this type were completed by all systems yet.
+- **unanswerable (refusal)** (14 questions): agent 14/14 vs hybrid+rerank 14/14 (within one question - noise).
+- Cost of the agent: 12.0 graph steps and 5676 tokens per query vs 1307 for hybrid+rerank (4.3x); p95 latency 36142 ms vs 5764 ms (latency is distorted by caching/throttling).
+- Refusal (14 unanswerable questions): naive RAG recall 0%; hybrid+rerank recall 100% at 100% precision (0 false refusals); the agent recall 100% at 100% (0 false refusals).
 
 **Judge vs. human agreement:** not measured yet - run `python -m eval.hand_grade sample`, label 20 answers, then `python -m eval.hand_grade agree`.
 <!-- RESULTS:END -->

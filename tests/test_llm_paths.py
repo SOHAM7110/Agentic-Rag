@@ -122,6 +122,29 @@ def test_hybrid_baseline_parses_fullwidth_citations():
     assert r["citations"] and "\u3010" not in r["answer"]
 
 
+def test_entity_linking_separates_near_duplicate_documents():
+    from agent.heuristics import link_entities
+    docs = {k: {"title": v} for k, v in {
+        "cb": "Rbi Commercial Banks Internal Ombudsman Directions 2026", "pb": "Rbi Payments Banks Internal Ombudsman Directions 2026",
+        "sfb": "Rbi Small Finance Banks Internal Ombudsman Directions 2026", "cic": "Rbi Credit Information Companies Internal Ombudsman Directions 2026",
+        "ir": "Rbi Commercial Banks Interest Rates On Advances Directions 2025", "kyc": "Rbi Commercial Banks Know Your Customer Directions 2025",
+        "td": "Rbi Commercial Banks Transfer And Distribution Of Credit Risk Directions 2025"}.items()}
+    assert set(link_entities("Is the minimum tenure for an Internal Ombudsman the same for payments banks and small finance banks?", docs)) == {"pb", "sfb"}
+    assert set(link_entities("By how many days does escalation differ between Credit Information Companies and commercial banks under the Internal Ombudsman Directions?", docs)) == {"cic", "cb"}
+    assert link_entities("How often must a bank review and publish its MCLR?", docs) == []
+
+
+def test_grader_and_answerer_see_the_same_passages():
+    seen = {}
+    class Spy(FakeLLM):
+        def generate(self, system, user, json_mode=False, max_tokens=600):
+            if system == P.GRADE_SYSTEM: seen["grade"] = user.count("\n[")
+            if system == P.ANSWER_SYSTEM: seen["answer"] = user.count("\n[")
+            return super().generate(system, user, json_mode, max_tokens)
+    _agent(Spy(qtype="compare", subs=["first part", "second part"])).run("Compare the single and group limits")
+    assert seen["grade"] == seen["answer"] and seen["answer"] >= 1, seen
+
+
 def test_loops_are_bounded():
     class NeverSufficient(FakeLLM):
         def generate(self, system, user, json_mode=False, max_tokens=600):

@@ -12,10 +12,21 @@ QWORDS = {"scheme", "programme", "program", "person", "people", "amount", "numbe
 
 # ------------------------------------------------------------------ entities / aspect
 def link_entities(question: str, docs: dict[str, dict]) -> list[str]:
-    """Match scheme titles (exact, or all distinctive title tokens) in the question; order = order of mention."""
+    """Which documents does the question name? Order = order of mention.
+    1. exact title, or all distinctive title tokens (scheme names);
+    2. otherwise, ALL title tokens that actually distinguish documents (document frequency < 80% of the corpus; numbers and
+       boilerplate like 'directions' are ignored) must appear in the question. This lets 'payments banks ... internal
+       ombudsman' select the payments-bank ombudsman document while 'commercial' being absent excludes the commercial-bank one -
+       essential when a corpus holds near-duplicate documents for different entity types."""
     q = norm_numbers(question.lower())
     qtok = set(re.findall(r"[a-z0-9]+", q))
-    found = []
+    qstem = set(tokenize(question))
+    found = {}
+    dist_toks = {did: [t for t in dict.fromkeys(tokenize(d["title"])) if not t.isdigit() and t not in GENERIC] for did, d in docs.items()}
+    df = {}
+    for toks in dist_toks.values():
+        for t in set(toks): df[t] = df.get(t, 0) + 1
+    n = max(len(docs), 1)
     for did, d in docs.items():
         title = d["title"].lower()
         pos = q.find(title)
@@ -23,9 +34,29 @@ def link_entities(question: str, docs: dict[str, dict]) -> list[str]:
             dist = [t for t in re.findall(r"[a-z0-9]+", title) if t not in GENERIC]
             if len(dist) >= 2 and all(t in qtok for t in dist):
                 pos = min(q.find(t) for t in dist)
+        if pos < 0:
+            req = [t for t in dist_toks[did] if df[t] / n < 0.8]            # tokens that distinguish this document
+            if len(req) >= 2 and all(t in qstem for t in req):
+                pos = min(q.find(t[:5]) if q.find(t[:5]) >= 0 else 0 for t in req)
         if pos >= 0:
-            found.append((pos, did))
-    return [d for _, d in sorted(found)]
+            found[did] = pos
+    return [d for d, _ in sorted(found.items(), key=lambda x: x[1])]
+
+
+def strip_entity_words(question: str, entities: list[str], docs: dict[str, dict]) -> str:
+    """For a question naming SEVERAL documents, remove the words that tell those documents apart (e.g. 'payments', 'small finance',
+    'commercial', 'credit information'). Each per-document search already filters on its document, so those words only pull the query
+    toward the wrong sibling. Words the linked documents share (e.g. 'internal ombudsman') are the topic and are kept."""
+    from retrieval.text import stem
+    if len(entities) < 2: return question
+    sets = [{t for t in tokenize(docs[e]["title"]) if not t.isdigit() and t not in GENERIC} for e in entities]
+    drop = set.union(*sets) - set.intersection(*sets)
+    out = []
+    for w in re.findall(r"\w+|\W+", question):
+        if w.isalpha() and stem(w.lower()) in drop: continue
+        out.append(w)
+    s = re.sub(r"\s+", " ", "".join(out)).strip()
+    return s or question
 
 
 def detect_aspect(question: str, docs: dict | None = None) -> str | None:
