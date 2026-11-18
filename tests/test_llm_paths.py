@@ -1,6 +1,7 @@
 """Exercises the real-LLM code paths of the agent with a scripted fake model (no network, no API key).
 Checks structure and robustness (never crashes, always terminates, degrades on LLM failure) - NOT answer quality.
 Run: python -m tests.test_llm_paths   (uses whatever index is in data/index or $INDEX_DIR)"""
+import tests.helpers as H   # noqa: F401  (forces dependency-free backends; must be first)
 import json
 from agent import prompts as P
 from agent.graph import Agent
@@ -29,8 +30,7 @@ class FakeLLM(LLM):
 
 
 def _agent(llm):
-    from retrieval.retriever import Retriever
-    return Agent(Retriever(), llm)
+    return Agent(H.regulatory_retriever(), llm)
 
 
 def test_plain_question_with_citations():
@@ -47,7 +47,7 @@ def test_decomposition_runs_one_retrieval_per_sub_question():
 
 def test_numeric_uses_calculator():
     llm = FakeLLM(qtype="numeric", answer="Retention is 25 [1].", expr="0.05*500")
-    r = _agent(llm).run("A bank securitises Rs 500 crore of 18-month loans. What retention?")
+    r = _agent(llm).run("A bank has eligible capital of Rs 10000 crore. What is its maximum exposure to a single counterparty?")
     assert any(c["tool"] == "calculator" and c["ok"] for c in r["tool_calls"]) and not r["refused"]
 
 
@@ -117,8 +117,7 @@ def test_token_and_fallback_accounting_survives_state_copies():
 
 def test_hybrid_baseline_parses_fullwidth_citations():
     from agent.baselines import HybridRAG
-    from retrieval.retriever import Retriever
-    r = HybridRAG(Retriever(), FakeLLM(answer="The limit is 20 percent \u30101\u3011.")).run("What is the single counterparty exposure limit?")
+    r = HybridRAG(H.regulatory_retriever(), FakeLLM(answer="The limit is 20 percent \u30101\u3011.")).run("What is the single counterparty exposure limit?")
     assert r["citations"] and "\u3010" not in r["answer"]
 
 
@@ -141,8 +140,30 @@ def test_grader_and_answerer_see_the_same_passages():
             if system == P.GRADE_SYSTEM: seen["grade"] = user.count("\n[")
             if system == P.ANSWER_SYSTEM: seen["answer"] = user.count("\n[")
             return super().generate(system, user, json_mode, max_tokens)
-    _agent(Spy(qtype="compare", subs=["first part", "second part"])).run("Compare the single and group limits")
+    _agent(Spy(qtype="compare", subs=["single counterparty exposure limit", "group of connected counterparties exposure limit"])).run("Compare the single and group limits")
     assert seen["grade"] == seen["answer"] and seen["answer"] >= 1, seen
+
+
+def test_retry_stops_when_a_rewrite_finds_nothing_new():
+    class NeverSufficient(FakeLLM):
+        def generate(self, system, user, json_mode=False, max_tokens=600):
+            if system == P.GRADE_SYSTEM: return LLMResult(json.dumps({"sufficient": False, "reason": "no minimum stated"}), 100, 10)
+            return super().generate(system, user, json_mode, max_tokens)
+    r = _agent(NeverSufficient()).run("What is the single counterparty exposure limit?")
+    assert r["refused"] and r["loops"] == 2 and "no new evidence" in r["answer"]      # tiny corpus: loop 2 adds nothing -> stop early
+
+
+def test_rewrite_is_told_what_is_missing_and_never_mentions_scheme_terms():
+    seen = {}
+    class Spy(FakeLLM):
+        def generate(self, system, user, json_mode=False, max_tokens=600):
+            if system == P.REWRITE_SYSTEM: seen["user"] = user
+            if system == P.GRADE_SYSTEM: return LLMResult(json.dumps({"sufficient": False, "reason": "does not state the review frequency"}), 100, 10)
+            return super().generate(system, user, json_mode, max_tokens)
+    _agent(Spy()).run("How often must the risk categorisation be reviewed?")
+    assert "does not state the review frequency" in seen["user"]
+    for scheme_word in ("programme outlay", "benefit amount", "nodal ministry", "minimum age"):
+        assert scheme_word not in P.REWRITE_SYSTEM
 
 
 def test_loops_are_bounded():

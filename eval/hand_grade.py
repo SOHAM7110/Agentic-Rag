@@ -13,7 +13,8 @@ def sample(n=20, system="agent", seed=1):
     rows = [json.loads(l) for l in (RESULTS_DIR / "per_question.jsonl").read_text().splitlines()]
     rows = [r for r in rows if r["system"] == system]
     random.Random(seed).shuffle(rows)
-    with open(PATH, "w", newline="") as f:
+    # UTF-8 preserves Unicode answers and lets Excel detect the encoding on Windows.
+    with open(PATH, "w", newline="", encoding="utf-8-sig") as f:
         w = csv.writer(f); w.writerow(["id", "type", "question", "gold_answer", "system_answer", "judge_score", "human"])
         for r in rows[:n]:
             w.writerow([r["id"], r["type"], r["question"], r["gold_answer"], r["answer"], r["correct"], ""])
@@ -21,7 +22,8 @@ def sample(n=20, system="agent", seed=1):
 
 
 def agree():
-    rows = [r for r in csv.DictReader(open(PATH)) if r["human"].strip() in ("0", "1")]
+    with open(PATH, newline="", encoding="utf-8-sig") as f:
+        rows = [r for r in csv.DictReader(f) if r["human"].strip() in ("0", "1")]
     if not rows: raise SystemExit("no human labels found")
     h = [int(r["human"]) for r in rows]; j = [int(float(r["judge_score"]) >= 0.5) for r in rows]
     n = len(h); po = sum(a == b for a, b in zip(h, j)) / n

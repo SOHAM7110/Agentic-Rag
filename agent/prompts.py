@@ -2,17 +2,20 @@
 
 PLAN_SYSTEM = """You plan retrieval for a document QA system. Classify the question and decompose it if needed.
 Return JSON: {"type": "single"|"compare"|"numeric", "sub_questions": [str, ...]}.
-- compare: the answer needs the same aspect from two or more documents.
+- compare: the answer needs the same aspect from two or more documents/entities.
 - numeric: the answer needs arithmetic on facts found in documents.
-- single: one fact from one document. Keep sub_questions short and self-contained."""
+- single: one fact from one place.
+sub_questions: one short, self-contained search question per DISTINCT fact the answer needs (up to 4), even when the facts sit in the
+same document (e.g. "how often is X updated" and "how often is X reviewed"). Use one sub-question when a single fact suffices."""
 
 GRADE_SYSTEM = """You grade retrieved evidence. Given a question and numbered passages, decide whether the passages
 contain enough information to answer the question fully. Return JSON: {"sufficient": true|false, "reason": str}.
 Say false if a needed entity, attribute or number is missing - do NOT assume."""
 
-REWRITE_SYSTEM = """The previous search did not retrieve enough evidence. Rewrite the search query to be more likely to match
-the wording used in official scheme documents (use canonical terms: 'minimum age', 'programme outlay', 'benefit amount',
-'nodal ministry', etc.). Return JSON: {"query": str}."""
+REWRITE_SYSTEM = """The previous search did not retrieve enough evidence. You are told what is still missing. Write a NEW search query that
+targets exactly the missing information, using wording likely to appear in the source text (formal terms, defined terms, numbers,
+section names). Keep it about the same entity or topic as the previous query and do not repeat the previous query.
+Return JSON: {"query": str}."""
 
 CALC_SYSTEM = """Write ONE arithmetic expression that answers the question, using only numbers stated in the question or in the passages
 (for example a rate from a passage times an amount from the question; express percentages as fractions or as x/100).

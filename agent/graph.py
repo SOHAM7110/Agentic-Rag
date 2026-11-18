@@ -23,7 +23,7 @@ except Exception:                              # pragma: no cover
 
 
 class State(TypedDict, total=False):
-    question: str; plan: dict; queries: list; loops: int; evidence: list; coverages: list
+    question: str; plan: dict; queries: list; loops: int; evidence: list; coverages: list; progress: int
     sufficient: bool; reason: str; tool_results: list; answer: str; claims: list
     citations: list; refused: bool; trace: list; tokens: int; degraded: bool; passages: list
 
@@ -163,10 +163,21 @@ class Agent:
             for l in lists:
                 if rank < len(l) and l[rank].idx not in seen:
                     seen.add(l[rank].idx); merged.append({"idx": l[rank].idx, "score": round(l[rank].score, 3)})
+        new_ids = {e["idx"] for e in merged}
+        prev = st.get("evidence", []) if loops > 1 else []
+        progress = len(new_ids - {e["idx"] for e in prev}) if prev else len(new_ids)
+        if prev:                                   # a rewrite should ADD evidence, not replace what was already found
+            from itertools import zip_longest
+            mixed, seen2 = [], set()
+            for a_, b_ in zip_longest(merged, prev):
+                for x in (a_, b_):
+                    if x is not None and x["idx"] not in seen2:
+                        seen2.add(x["idx"]); mixed.append(x)
+            merged = mixed
         ev = merged[:8]
         tok = sum(approx_tokens(self.r.chunks[e["idx"]]["text"]) for e in ev)
         self._rs()["tokens"] += tok // 2
-        return {"plan": plan, "queries": queries, "loops": loops, "evidence": ev, "coverages": cov,
+        return {"plan": plan, "queries": queries, "loops": loops, "evidence": ev, "coverages": cov, "progress": progress,
                 "trace": self._trace(st, "retrieve", f"loop {loops}: {len(queries)} query(ies) -> {len(ev)} chunks (hybrid+rerank){note}", t0,
                                      queries=[q["q"] for q in queries], hits=[self.r.chunks[e["idx"]]["id"] for e in ev], coverage=cov)}
 
@@ -202,6 +213,8 @@ class Agent:
                 "trace": self._trace(st, "grade", f"sufficient={suff} ({reason})", t0, sufficient=suff, reason=reason)}
 
     def route_after_grade(self, st):
+        if not st["sufficient"] and st["loops"] >= 2 and st.get("progress", 1) == 0:
+            return "tools"            # the rewritten search found nothing new: more loops would only burn tokens
         if st["sufficient"] or st["loops"] >= MAX_LOOPS or self._rs()["tokens"] > TOKEN_BUDGET:
             return "tools"
         return "rewrite"
@@ -218,7 +231,7 @@ class Agent:
                 label = FACT_SPEC[plan["aspect"]][1] if plan["aspect"] else qd["q"]
                 rw["q"] = f"{self.docs[qd['doc']]['title']} {label}" if attempt < 2 else f"{label} {' '.join(FACT_SPEC[plan['aspect']][2][:3]) if plan['aspect'] else ''}"
             if not self.llm.offline:
-                out = self._llm(st, P.REWRITE_SYSTEM, f"Question: {st['question']}\nPrevious query: {qd['q']}", lambda: {"query": rw["q"]})
+                out = self._llm(st, P.REWRITE_SYSTEM, f"Question: {st['question']}\nPrevious query: {qd['q']}\nWhat the grader says is still missing: {st.get('reason', '')}", lambda: {"query": rw["q"]})
                 rw["q"] = out.get("query") or rw["q"]
             new_queries.append({"q": rw["q"], "doc": qd.get("doc"), "drop": rw["drop_filter"]})
         return {"queries": new_queries,
@@ -290,7 +303,7 @@ class Agent:
                     attributed = self._attribute(claims, passages)
             if not claims: refuse = True
         if refuse:
-            reason = st.get("reason", "")
+            reason = st.get("reason", "") + (" | rewritten searches found no new evidence" if st.get("loops", 1) > 1 and st.get("progress", 1) == 0 else "")
             text = f"I can't answer this from the provided documents ({reason or 'no supporting evidence found'})."
             return {"answer": text, "claims": [], "refused": True, "passages": [c["id"] for c in passages],
                     "trace": self._trace(st, "answer", "refused: evidence insufficient", t0)}

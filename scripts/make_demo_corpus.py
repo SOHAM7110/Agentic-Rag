@@ -2,7 +2,7 @@
 
 Why synthetic? It lets `make eval` run anywhere with zero downloads, and every gold answer is
 guaranteed correct because the facts were generated, then the gold *page* is verified by re-parsing the PDFs.
-For a real project replace data/pdfs/ with real documents and hand-write eval/golden_set.jsonl
+This is only the OFFLINE DEMO (data/demo_pdfs, data/demo_golden.jsonl). The real project uses data/pdfs + eval/golden_set.jsonl
 (same schema, see eval/README.md).
 """
 from __future__ import annotations
@@ -18,9 +18,9 @@ from reportlab.lib.units import cm
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
 from reportlab.lib import colors
 
-PDF_DIR = ROOT / "data" / "pdfs"
-GOLD = ROOT / "eval" / "golden_set.jsonl"
-MANIFEST = ROOT / "data" / "corpus_manifest.json"
+PDF_DIR = ROOT / "data" / "demo_pdfs"
+GOLD = ROOT / "data" / "demo_golden.jsonl"
+MANIFEST = ROOT / "data" / "demo_manifest.json"
 SEED = 7
 
 # name, sector, beneficiaries, ministry, descriptor, benefit label, benefit type

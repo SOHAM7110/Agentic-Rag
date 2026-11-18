@@ -150,8 +150,11 @@ def tables(abl, n_ans, S, per_q, meta, gold_n):
     for label, key, f in rowdefs:
         vals = [S[s][key] for s in names]
         no_unans = not any(r["type"] == "unanswerable" for r in per_q)
+        no_ans = not any(r["type"] != "unanswerable" for r in per_q)
         L.append(f"| {label} | " + " | ".join("n/a" if ((key in ("citation_hit", "cited_contains_answer") and s == "naive_rag")
-                                                       or (key in ("refusal_precision", "refusal_recall") and no_unans)) else "-" if v is None else f(v)
+                                                       or (key in ("refusal_precision", "refusal_recall") and no_unans)
+                                                       or (key in ("correctness_answerable", "faithfulness", "citation_hit", "cited_contains_answer") and no_ans)
+                                                       or (key == "refusal_precision" and no_ans)) else "-" if v is None else f(v)
                                               for s, v in zip(names, vals)) + " |")
     ci = []
     for s in names:
@@ -196,8 +199,9 @@ def plots(abl, S):
 
 
 def update_readme(md: str):
+    import os
     p = ROOT / "README.md"
-    if not p.exists(): return
+    if not p.exists() or os.getenv("UPDATE_README", "1") != "1": return
     s = p.read_text()
     block = "<!-- RESULTS:START -->\n" + md + "\n<!-- RESULTS:END -->"
     s = re.sub(r"<!-- RESULTS:START -->.*?<!-- RESULTS:END -->", lambda m: block, s, flags=re.S)

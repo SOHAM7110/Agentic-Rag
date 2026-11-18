@@ -19,7 +19,7 @@ def _load_dotenv(path: Path = ROOT / ".env"):
 _load_dotenv()
 PDF_DIR = Path(os.getenv("PDF_DIR", ROOT / "data" / "pdfs"))
 INDEX_DIR = Path(os.getenv("INDEX_DIR", ROOT / "data" / "index"))
-RESULTS_DIR = ROOT / "results"
+RESULTS_DIR = Path(os.getenv("RESULTS_DIR", ROOT / "results"))
 GOLDEN_PATH = Path(os.getenv("GOLDEN_PATH", ROOT / "eval" / "golden_set.jsonl"))
 LOG_PATH = Path(os.getenv("LOG_PATH", ROOT / "results" / "query_log.jsonl"))
 CACHE_PATH = Path(os.getenv("LLM_CACHE_PATH", ROOT / "data" / "llm_cache.sqlite"))
@@ -40,7 +40,7 @@ RERANKER = os.getenv("RERANKER", "auto")        # auto | cross | lexical
 VECTOR_STORE = os.getenv("VECTOR_STORE", "auto")  # auto | chroma | numpy
 TOP_K = int(os.getenv("TOP_K", 5))
 CANDIDATES = int(os.getenv("CANDIDATES", 20))
-CHUNK_MAX_CHARS = int(os.getenv("CHUNK_MAX_CHARS", 400))
+CHUNK_MAX_CHARS = int(os.getenv("CHUNK_MAX_CHARS", 900))
 
 # --- Agent hard limits -------------------------------------------------------
 MAX_LOOPS = int(os.getenv("MAX_LOOPS", 3))

@@ -1,32 +1,39 @@
-.PHONY: install demo-corpus index eval test api ui docker hand-grade clean
+.PHONY: install index eval eval-retrieval demo test diagnose check-linking hand-grade golden clean
 PY ?= python3
 
-install:            ## full deps (PyMuPDF, ChromaDB, sentence-transformers, LangGraph, FastAPI, Streamlit)
+install:            ## full stack: PyMuPDF, ChromaDB, bge-small + cross-encoder, LangGraph, FastAPI, Streamlit
 	$(PY) -m pip install -r requirements.txt
 
-demo-corpus:        ## regenerate the SYNTHETIC 30-PDF corpus + 80-question golden set
-	$(PY) scripts/make_demo_corpus.py
-
-index:              ## parse -> section-aware chunks -> embeddings -> vector store (+ facts table)
+index:              ## parse -> section-aware chunks -> embeddings -> vector store   (set CHUNK_MAX_CHARS=900 for the RBI documents)
 	$(PY) -m ingest.build_index
 
-eval: index         ## ONE COMMAND: ablation + 3-system comparison; regenerates results/ and the README table
-	$(PY) -m eval.run_eval
+eval-retrieval:     ## free: retrieval ablation only (no LLM, no API key)
+	$(PY) -m eval.run_eval --retrieval-only
 
-hand-grade:         ## write a 20-answer sheet for judge-vs-human agreement
-	$(PY) -m eval.hand_grade sample
+eval: index         ## the full three-system evaluation (needs LLM_PROVIDER / JUDGE_PROVIDER, see .env.example)
+	$(PY) -m eval.run_eval --exclude $(DEV_IDS)
+
+demo:               
+	RESULTS_DIR=data/demo_results UPDATE_README=0 CHUNK_MAX_CHARS=400 PDF_DIR=data/demo_pdfs INDEX_DIR=data/demo_index GOLDEN_PATH=data/demo_golden.jsonl LLM_PROVIDER=offline JUDGE_PROVIDER=offline $(PY) -m ingest.build_index
+	RESULTS_DIR=data/demo_results UPDATE_README=0 CHUNK_MAX_CHARS=400 PDF_DIR=data/demo_pdfs INDEX_DIR=data/demo_index GOLDEN_PATH=data/demo_golden.jsonl LLM_PROVIDER=offline JUDGE_PROVIDER=offline $(PY) -m eval.run_eval
+
+golden:             ## merge golden_round*.jsonl -> golden_set.jsonl and verify every gold page against the PDFs
+	$(PY) -m eval.merge_golden && $(PY) -m eval.verify_golden
 
 test:
-	$(PY) -m tests.test_core
+	$(PY) -m tests.test_core && $(PY) -m tests.test_llm_paths
 
-api:
-	$(PY) -m uvicorn api.main:app --host 0.0.0.0 --port 8000
+diagnose:           ## print every agent step for a few questions (make diagnose IDS=r1_027,r4_006)
+	$(PY) scripts/diagnose.py --ids=$(IDS)
 
-ui:
-	$(PY) -m streamlit run ui/app.py --server.port 8501
+check-linking:      ## free: document linking + per-document retrieval check with your real models
+	$(PY) scripts/check_linking.py
 
-docker:
-	docker build -t agentic-rag . && docker run -p 7860:7860 --env-file .env agentic-rag
+hand-grade:         ## 20-answer sheet for judge-vs-human agreement (then: python -m eval.hand_grade agree)
+	$(PY) -m eval.hand_grade sample
 
 clean:
-	rm -rf data/index data/llm_cache.sqlite results/query_log.jsonl
+	rm -rf data/index data/demo_index data/llm_cache.sqlite results/query_log.jsonl
+
+# questions used while debugging the agent (report them separately, or leave them out as `make eval` does)
+DEV_IDS = r1_001,r1_020,r2_013,r2_033,r3_022,r4_004,r1_024,r1_027
