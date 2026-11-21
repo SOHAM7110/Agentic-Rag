@@ -35,29 +35,7 @@ GAP = 14.0  # points of horizontal whitespace that mark a new table cell
 MARKER = re.compile(r"^(\(?[0-9A-Za-z]{1,5}[.)]|\d+(\.\d+)+\.?)$")
 
 
-def merge_marker_lines(items: list) -> list:
-    """items: [(y, x0, Line)]. A marker-only line such as '(4)' and the text line at the same height to its right are ONE paragraph line
-    ('(4) The tenure ...'). PyMuPDF returns them as separate lines when the hanging indent is wide; pdfplumber as one line with a gap."""
-    used, out = set(), []
-    for i, (y, x, l) in enumerate(items):
-        if i in used:
-            continue
-        if MARKER.match(l.text.strip()):
-            best = None
-            for j, (y2, x2, l2) in enumerate(items):
-                if j != i and j not in used and abs(y2 - y) < 4 and x2 > x and not MARKER.match(l2.text.strip()):
-                    if best is None or x2 < items[best][1]:
-                        best = j
-            if best is not None:
-                used.add(best)
-                l2 = items[best][2]
-                out.append((y, x, Line(l.text.strip() + " " + l2.text, l2.size, l2.bold or l.bold, l.page)))
-                continue
-        out.append((y, x, l))
-    return out
-
-
-def merge_same_row(items: list, tol: float = 3.0) -> list:
+def merge_same_row(items: list, tol: float = 3.5) -> list:
     """items: [(y, x0, Line)]. Lines that sit at the same height are ONE visual row: a table row ('Up to 15 per cent | Nil') or a paragraph
     marker plus its text ('(4) The tenure ...'). PyMuPDF returns every table cell as its own line (pdfplumber groups them itself), so the
     row is rebuilt here: cells are ordered left to right and joined with ' | ', a paragraph marker with a space."""
@@ -111,7 +89,7 @@ def _lines_fitz(path: str) -> dict[int, list[Line]]:
                     text = text.strip()
                     if text:
                         lines.append((ln["bbox"][1], ln["bbox"][0], Line(text, max(sizes), bold, pno)))
-            lines = merge_same_row(merge_marker_lines(sorted(lines, key=lambda x: (x[0], x[1]))))
+            lines = merge_same_row(lines)
             out[pno] = [l for _, _, l in sorted(lines, key=lambda x: (x[0], x[1]))]
     return out
 

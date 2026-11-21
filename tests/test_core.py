@@ -48,15 +48,17 @@ def test_numbered_paragraphs_are_not_tables():
     assert "not less than three years" in " ".join(c["text"] for c in r.chunks)        # sentence is not cut mid-way
 
 
-def test_marker_line_is_merged_with_the_text_beside_it():
-    """PyMuPDF layout: '(4)' and its paragraph text arrive as two separate lines at the same height."""
-    from ingest.parse import Line, merge_marker_lines
-    items = [(100.0, 72.0, Line("(4)", 10.5, False, 1)), (100.2, 108.0, Line("The tenure of the IO shall be a fixed term of", 10.5, False, 1)),
-             (114.0, 108.0, Line("not less than three years.", 10.5, False, 1)), (130.0, 72.0, Line("(5)", 10.5, False, 1)),
-             (130.0, 108.0, Line("The IO shall not exceed five years.", 10.5, False, 1))]
-    out = [l.text for _, _, l in merge_marker_lines(items)]
-    assert out == ["(4) The tenure of the IO shall be a fixed term of", "not less than three years.", "(5) The IO shall not exceed five years."], out
-    assert [l.text for _, _, l in merge_marker_lines([(10.0, 72.0, Line("(a)", 10, False, 1))])] == ["(a)"]       # nothing beside it: unchanged
+def test_marker_and_its_text_become_one_line_whatever_the_order_or_tiny_height_differences():
+    """PyMuPDF layout: '(4)' and its paragraph text arrive as two lines at (almost) the same height, in either order. Regression: the pair was
+    once emitted twice, which the chunker then read as a two-cell table row."""
+    from ingest.parse import Line, merge_same_row
+    L = lambda s: Line(s, 10.5, False, 1)
+    for y_marker, y_text in [(100.0, 100.2), (100.0, 99.8), (100.0, 100.0)]:
+        items = [(y_marker, 72.0, L("(4)")), (y_text, 108.0, L("The tenure of the IO shall be a fixed term of")),
+                 (114.0, 108.0, L("not less than three years.")), (130.0, 72.0, L("(5)")), (130.0, 108.0, L("The IO shall not exceed five years."))]
+        out = [l.text for _, _, l in merge_same_row(items)]
+        assert out == ["(4) The tenure of the IO shall be a fixed term of", "not less than three years.", "(5) The IO shall not exceed five years."], (y_text, out)
+    assert [l.text for _, _, l in merge_same_row([(10.0, 72.0, L("(a)"))])] == ["(a)"]       # nothing beside it: unchanged
 
 
 def test_cells_returned_as_separate_lines_are_rebuilt_into_table_rows():
