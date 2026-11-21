@@ -57,6 +57,31 @@ def merge_marker_lines(items: list) -> list:
     return out
 
 
+def merge_same_row(items: list, tol: float = 3.0) -> list:
+    """items: [(y, x0, Line)]. Lines that sit at the same height are ONE visual row: a table row ('Up to 15 per cent | Nil') or a paragraph
+    marker plus its text ('(4) The tenure ...'). PyMuPDF returns every table cell as its own line (pdfplumber groups them itself), so the
+    row is rebuilt here: cells are ordered left to right and joined with ' | ', a paragraph marker with a space."""
+    items = sorted(items, key=lambda t: t[0])
+    clusters, cur = [], []
+    for it in items:
+        if cur and abs(it[0] - cur[0][0]) <= tol:
+            cur.append(it)
+        else:
+            if cur: clusters.append(cur)
+            cur = [it]
+    if cur: clusters.append(cur)
+    out = []
+    for cl in clusters:
+        cl.sort(key=lambda t: t[1])
+        y, x, first = cl[0]
+        text, size, bold = first.text, first.size, first.bold
+        for _, _, l in cl[1:]:
+            text = text + _gap_sep(text) + l.text
+            size, bold = max(size, l.size), bold and l.bold
+        out.append((y, x, Line(text, size, bold, first.page)))
+    return out
+
+
 def _gap_sep(so_far: str) -> str:
     """Separator to use for a big horizontal gap: a space after a paragraph marker, ' | ' (table cell) otherwise."""
     return " " if MARKER.match(so_far.strip()) else " | "
@@ -86,7 +111,7 @@ def _lines_fitz(path: str) -> dict[int, list[Line]]:
                     text = text.strip()
                     if text:
                         lines.append((ln["bbox"][1], ln["bbox"][0], Line(text, max(sizes), bold, pno)))
-            lines = merge_marker_lines(sorted(lines, key=lambda x: (x[0], x[1])))
+            lines = merge_same_row(merge_marker_lines(sorted(lines, key=lambda x: (x[0], x[1]))))
             out[pno] = [l for _, _, l in sorted(lines, key=lambda x: (x[0], x[1]))]
     return out
 

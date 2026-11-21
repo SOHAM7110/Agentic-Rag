@@ -59,11 +59,25 @@ def test_marker_line_is_merged_with_the_text_beside_it():
     assert [l.text for _, _, l in merge_marker_lines([(10.0, 72.0, Line("(a)", 10, False, 1))])] == ["(a)"]       # nothing beside it: unchanged
 
 
+def test_cells_returned_as_separate_lines_are_rebuilt_into_table_rows():
+    """PyMuPDF layout: each table cell is its own line; cells of one row differ by a fraction of a point in y and arrive in any order."""
+    from ingest.parse import Line, merge_same_row
+    L = lambda s: Line(s, 10.0, False, 1)
+    items = [(200.2, 300.0, L("40 bps")), (200.0, 72.0, L("More than 30 per cent and up to 50 per cent")),
+             (150.0, 72.0, L("Up to 15 per cent")), (150.1, 300.0, L("Nil")),
+             (100.0, 72.0, L("A heading line"))]
+    out = [l.text for _, _, l in merge_same_row(items)]
+    assert out == ["A heading line", "Up to 15 per cent | Nil", "More than 30 per cent and up to 50 per cent | 40 bps"], out
+    items2 = [(100.0, 72.0, L("(4)")), (100.2, 108.0, L("The tenure is a fixed term."))]
+    assert [l.text for _, _, l in merge_same_row(items2)] == ["(4) The tenure is a fixed term."]
+    assert [l.text for _, _, l in merge_same_row([(10.0, 72.0, L("Only line"))])] == ["Only line"]
+
+
 def test_table_keeps_lead_in_and_wrapped_cells():
     r = H.regulatory_retriever()
     t = next(c for c in r.chunks if "40 bps" in c["text"])
-    assert t["kind"] == "table" and t["text"].startswith("A bank shall make incremental provisions on unhedged")
-    assert "More than 75 per cent" in t["text"] and "80 bps" in t["text"]              # whole table in one chunk
+    assert t["kind"] == "table" and t["text"].startswith("A bank shall make incremental provisions on unhedged"), (t["kind"], t["text"][:400])
+    assert "More than 75 per cent" in t["text"] and "80 bps" in t["text"], t["text"][:600]              # whole table in one chunk
 
 
 def test_retrieval_finds_the_right_sibling_document():
