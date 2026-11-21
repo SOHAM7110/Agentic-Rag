@@ -4,7 +4,7 @@ every graph step (plan type, sub-questions, coverage, grade verdict + reason), t
 import json, sys
 sys.path.insert(0, ".")
 from config import GOLDEN_PATH
-from llm import get_llm
+from llm import get_llm, get_control_llm
 from retrieval.retriever import Retriever
 from agent.graph import Agent
 from eval.run_eval import spread
@@ -13,7 +13,7 @@ args = [a for a in sys.argv[1:] if not a.startswith("--")]
 ids = next((a.split("=", 1)[1].split(",") for a in sys.argv[1:] if a.startswith("--ids=")), None)
 gold = [json.loads(l) for l in GOLDEN_PATH.read_text(encoding="utf-8").splitlines() if l.strip()]
 rows = [g for g in gold if g["id"] in ids] if ids else spread(gold, int(args[0]) if args else 6)
-agent = Agent(Retriever(), get_llm())
+agent = Agent(Retriever(), get_llm(), get_control_llm())
 print("LLM:", agent.llm.name, "| facts table populated:", agent.has_facts)
 for g in rows:
     r = agent.run(g["question"])

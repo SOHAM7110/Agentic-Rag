@@ -5,7 +5,7 @@ import json, shutil, threading, time
 from collections import OrderedDict
 from pathlib import Path
 from config import LOG_PATH, PDF_DIR, INDEX_DIR, LLM_PROVIDER
-from llm import get_llm
+from llm import get_llm, get_control_llm
 
 SYSTEMS = ("agent", "hybrid_rerank_rag", "naive_rag")
 
@@ -26,7 +26,7 @@ class Service:
             from ingest.build_index import build
             build()
         self.retriever = Retriever(); self.llm = get_llm()
-        self.systems = {"agent": Agent(self.retriever, self.llm), "hybrid_rerank_rag": HybridRAG(self.retriever, self.llm),
+        self.systems = {"agent": Agent(self.retriever, self.llm, get_control_llm()), "hybrid_rerank_rag": HybridRAG(self.retriever, self.llm),
                         "naive_rag": NaiveRAG(self.retriever, self.llm)}
         self.cache.clear()
 

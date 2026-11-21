@@ -1,4 +1,4 @@
-.PHONY: install index eval eval-retrieval demo test diagnose check-linking hand-grade golden clean
+.PHONY: install index eval-sample latency eval eval-retrieval demo test diagnose check-linking hand-grade golden clean
 PY ?= python3
 
 install:            ## full stack: PyMuPDF, ChromaDB, bge-small + cross-encoder, LangGraph, FastAPI, Streamlit
@@ -9,6 +9,12 @@ index:              ## parse -> section-aware chunks -> embeddings -> vector sto
 
 eval-retrieval:     ## free: retrieval ablation only (no LLM, no API key)
 	$(PY) -m eval.run_eval --retrieval-only
+
+eval-sample: index  ## the planned ~2-3 day run: 40 answerable + 6 unanswerable questions, all four systems, resumes from cache (see README)
+	$(PY) -m eval.run_eval --stratified single=12,multihop=12,numerical=10,ambiguous=6,unanswerable=6 --exclude $(DEV_IDS) --publish
+
+latency:            ## cold, unthrottled latency per system (spends tokens)
+	$(PY) scripts/latency_bench.py 8
 
 eval: index         ## the full three-system evaluation (needs LLM_PROVIDER / JUDGE_PROVIDER, see .env.example)
 	$(PY) -m eval.run_eval --exclude $(DEV_IDS)

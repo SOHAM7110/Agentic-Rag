@@ -53,3 +53,4 @@ LLM_MIN_INTERVAL = float(os.getenv("LLM_MIN_INTERVAL", 0)) # seconds between LLM
 PROMPT_PASSAGES = int(os.getenv("PROMPT_PASSAGES", 6))     # evidence chunks shown to the LLM
 LLM_REASONING_EFFORT = os.getenv("LLM_REASONING_EFFORT", "low")   # gpt-oss models: low | medium | high (higher = better but slower/more tokens)
 LLM_MAX_WAIT = float(os.getenv("LLM_MAX_WAIT", 90))   # a 429 asking us to wait longer than this (seconds) aborts instead of sleeping
+LLM_CONTROL_MODEL = os.getenv("LLM_CONTROL_MODEL", "")   # optional cheaper model for the agent's plan/grade/rewrite/verify steps (separate free-tier quota)

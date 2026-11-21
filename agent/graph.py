@@ -11,7 +11,7 @@ from config import MAX_LOOPS, TOKEN_BUDGET, TOP_K, GRADE_FLOOR, PROMPT_PASSAGES
 from ingest.facts import FACT_SPEC
 from llm.base import LLMError, LLMQuotaError
 from retrieval.retriever import ctx_text
-from retrieval.text import approx_tokens
+from retrieval.text import approx_tokens, tokenize
 from . import heuristics as H, prompts as P, tools as T
 
 try:                                           # real LangGraph if installed, otherwise the bundled mini engine
@@ -23,7 +23,7 @@ except Exception:                              # pragma: no cover
 
 
 class State(TypedDict, total=False):
-    question: str; plan: dict; queries: list; loops: int; evidence: list; coverages: list; progress: int
+    question: str; plan: dict; queries: list; loops: int; evidence: list; coverages: list; progress: int; tried: list; stalled: bool
     sufficient: bool; reason: str; tool_results: list; answer: str; claims: list
     citations: list; refused: bool; trace: list; tokens: int; degraded: bool; passages: list
 
@@ -48,8 +48,10 @@ def parse_json(text: str):
 
 
 class Agent:
-    def __init__(self, retriever, llm):
+    def __init__(self, retriever, llm, control=None):
+        """control: optional cheaper model for the control steps (plan, grade, rewrite, calculator, verify); the main `llm` writes the answer."""
         self.r, self.llm = retriever, llm
+        self.ctl = control if (control is not None and not llm.offline) else llm
         self.docs = retriever.docs
         # the structured tools only make sense if the facts table was populated at ingestion
         self.has_facts = any(retriever.facts.values())
@@ -70,7 +72,7 @@ class Agent:
             out = heuristic(); self._rs()["tokens"] += tok + approx_tokens(json.dumps(out, default=str))
             return out
         try:
-            r = self.llm.generate(system, user, json_mode=json_mode)
+            r = (self.llm if system == P.ANSWER_SYSTEM else self.ctl).generate(system, user, json_mode=json_mode)
             self._rs()["tokens"] += r.in_tokens + r.out_tokens
             if not json_mode: return r.text
             data = parse_json(r.text)
@@ -221,7 +223,9 @@ class Agent:
 
     def rewrite(self, st):
         t0 = time.perf_counter(); plan = st["plan"]; attempt = st["loops"]
-        new_queries = []
+        norm = lambda q: " ".join(sorted(set(tokenize(q))))
+        tried = set(st.get("tried", [])) | {norm(qd["q"]) for qd in st["queries"]}
+        new_queries, stalled = [], False
         for qd in st["queries"]:
             if qd.get("doc") is None and len(st["queries"]) > 1:      # LLM sub-question: only the LLM rewrites it
                 rw = {"q": qd["q"], "drop_filter": False}
@@ -233,10 +237,22 @@ class Agent:
             if not self.llm.offline:
                 out = self._llm(st, P.REWRITE_SYSTEM, f"Question: {st['question']}\nPrevious query: {qd['q']}\nWhat the grader says is still missing: {st.get('reason', '')}", lambda: {"query": rw["q"]})
                 rw["q"] = out.get("query") or rw["q"]
+            if norm(rw["q"]) in tried:                                  # identical to something already searched: try a keyword variant
+                kw = " ".join(H.query_tokens(st["question"], set(), drop_numbers=True))
+                alt = f"{kw} {st.get('reason', '')}".strip()
+                if norm(alt) not in tried and kw:
+                    rw["q"] = alt
+                else:
+                    stalled = True
+            tried.add(norm(rw["q"]))
             new_queries.append({"q": rw["q"], "doc": qd.get("doc"), "drop": rw["drop_filter"]})
-        return {"queries": new_queries,
-                "trace": self._trace(st, "rewrite", f"attempt {attempt}: " + " || ".join(q["q"] for q in new_queries) + (" (doc filter dropped)" if new_queries[0].get("drop") else ""),
-                                     t0, queries=[q["q"] for q in new_queries])}
+        return {"queries": new_queries, "tried": sorted(tried), "stalled": stalled,
+                "trace": self._trace(st, "rewrite", f"attempt {attempt}: " + " || ".join(q["q"] for q in new_queries)
+                                     + (" (doc filter dropped)" if new_queries[0].get("drop") else "")
+                                     + (" | no new query possible -> stop" if stalled else ""), t0, queries=[q["q"] for q in new_queries])}
+
+    def route_after_rewrite(self, st):
+        return "tools" if st.get("stalled") else "retrieve"
 
     def tools(self, st):
         t0 = time.perf_counter(); plan = st["plan"]; res: list[T.ToolResult] = []
@@ -303,7 +319,7 @@ class Agent:
                     attributed = self._attribute(claims, passages)
             if not claims: refuse = True
         if refuse:
-            reason = st.get("reason", "") + (" | rewritten searches found no new evidence" if st.get("loops", 1) > 1 and st.get("progress", 1) == 0 else "")
+            reason = st.get("reason", "") + (" | rewritten searches found no new evidence" if st.get("loops", 1) > 1 and st.get("progress", 1) == 0 else "") + (" | no new query could be formed" if st.get("stalled") else "")
             text = f"I can't answer this from the provided documents ({reason or 'no supporting evidence found'})."
             return {"answer": text, "claims": [], "refused": True, "passages": [c["id"] for c in passages],
                     "trace": self._trace(st, "answer", "refused: evidence insufficient", t0)}
@@ -417,7 +433,7 @@ class Agent:
         g.set_entry_point("plan")
         g.add_edge("plan", "retrieve"); g.add_edge("retrieve", "grade")
         g.add_conditional_edges("grade", self.route_after_grade, {"rewrite": "rewrite", "tools": "tools"})
-        g.add_edge("rewrite", "retrieve"); g.add_edge("tools", "answer"); g.add_edge("answer", "verify"); g.add_edge("verify", END)
+        g.add_conditional_edges("rewrite", self.route_after_rewrite, {"retrieve": "retrieve", "tools": "tools"}); g.add_edge("tools", "answer"); g.add_edge("answer", "verify"); g.add_edge("verify", END)
         return g.compile()
 
     def run(self, question: str) -> dict:

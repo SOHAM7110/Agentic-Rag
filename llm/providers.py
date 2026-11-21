@@ -39,12 +39,13 @@ def _throttle():
 
 
 class OpenAICompatLLM(LLM):
-    def __init__(self, provider: str, model: str = "", retries: int = 6, use_cache: bool = True):
+    def __init__(self, provider: str, model: str = "", retries: int = 6, use_cache: bool | None = None):
         cfg = PROVIDERS[provider]
         self.base, self.key_env = cfg["url"], cfg["key"]
         self.model = model or cfg["model"]
         self.name = f"{provider}:{self.model}"
         self.retries = retries
+        if use_cache is None: use_cache = os.getenv("LLM_NO_CACHE", "0") != "1"     # LLM_NO_CACHE=1 -> honest cold-latency measurement
         self.cache = Cache() if use_cache else None
         self.api_key = os.getenv(self.key_env, "") if self.key_env else ""
         if self.key_env and not self.api_key:

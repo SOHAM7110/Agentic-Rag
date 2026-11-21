@@ -166,6 +166,35 @@ def test_rewrite_is_told_what_is_missing_and_never_mentions_scheme_terms():
         assert scheme_word not in P.REWRITE_SYSTEM
 
 
+def test_rewrite_never_repeats_a_query_and_stops_when_it_cannot_change_it():
+    class Same(FakeLLM):
+        reason = "does not state the review frequency"
+        def generate(self, system, user, json_mode=False, max_tokens=600):
+            if system == P.GRADE_SYSTEM: return LLMResult(json.dumps({"sufficient": False, "reason": self.reason}), 100, 10)
+            if system == P.REWRITE_SYSTEM:      # a model that just echoes the previous query
+                prev = [l for l in user.splitlines() if l.startswith("Previous query:")][0].split(":", 1)[1].strip()
+                return LLMResult(json.dumps({"query": prev}), 100, 10)
+            return super().generate(system, user, json_mode, max_tokens)
+    r = _agent(Same()).run("How often must the risk categorisation be reviewed?")
+    qs = [t["data"]["queries"][0] for t in r["trace"] if t["node"] == "retrieve"]
+    assert len(set(qs)) == len(qs), qs                          # no query is ever searched twice
+    class Mute(Same): reason = ""
+    r2 = _agent(Mute()).run("How often must the risk categorisation be reviewed?")
+    assert r2["refused"] and r2["loops"] == 1 and "no new query" in r2["answer"], (r2["loops"], r2["answer"])
+
+
+def test_control_model_does_the_control_steps_and_main_model_only_answers():
+    main, ctl = FakeLLM(), FakeLLM()
+    r = Agent(H.regulatory_retriever(), main, ctl).run("What is the single counterparty exposure limit?")
+    assert not r["refused"] and len(main.calls) == 1 and len(ctl.calls) >= 3, (main.calls, ctl.calls)
+
+
+def test_dense_grounded_baseline_uses_dense_retrieval_and_the_grounded_prompt():
+    from agent.baselines import DenseGroundedRAG
+    r = DenseGroundedRAG(H.regulatory_retriever(), FakeLLM(answer="INSUFFICIENT_EVIDENCE")).run("What is the crypto limit?")
+    assert r["system"] == "dense_grounded_rag" and r["refused"] and "dense" in r["trace"][0]["summary"]
+
+
 def test_loops_are_bounded():
     class NeverSufficient(FakeLLM):
         def generate(self, system, user, json_mode=False, max_tokens=600):

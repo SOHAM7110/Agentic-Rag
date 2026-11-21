@@ -5,16 +5,17 @@ from __future__ import annotations
 import json, re, sys, time
 from collections import defaultdict
 from config import GOLDEN_PATH, RESULTS_DIR, LLM_PROVIDER, LLM_MODEL, JUDGE_PROVIDER, JUDGE_MODEL, ROOT
-from llm import get_llm
+from llm import get_llm, get_control_llm
 from llm.base import LLMQuotaError
 from retrieval.retriever import Retriever, MODES
 from agent.graph import Agent, ENGINE
-from agent.baselines import NaiveRAG, HybridRAG
+from agent.baselines import NaiveRAG, HybridRAG, DenseGroundedRAG
 from .judge import Judge
 from . import metrics as M
 
 TYPES = ["single", "multihop", "numerical", "unanswerable", "ambiguous"]
-SYS_LABEL = {"naive_rag": "Naive RAG (dense top-3)", "hybrid_rerank_rag": "Hybrid + rerank (single shot)", "agent": "Full agent"}
+SYS_LABEL = {"naive_rag": "Naive RAG (dense top-3, no refusal prompt)", "dense_grounded_rag": "Dense + grounded/refusing prompt",
+             "hybrid_rerank_rag": "Hybrid + rerank + grounded prompt", "agent": "Full agent"}
 MODE_LABEL = {"dense": "Dense only", "bm25": "BM25 only", "hybrid": "Hybrid (RRF)", "hybrid_rerank": "Hybrid + rerank"}
 
 
@@ -32,9 +33,25 @@ def retrieval_ablation(r: Retriever, gold):
     return {m: {k: M.mean([x[k] for x in v]) for k in v[0]} for m, v in rows.items()}, len(ans)
 
 
+def store_rows(rows: list[dict]):
+    """results/per_question.jsonl accumulates across runs (latest row per system+question wins), so hand-grading and later runs
+    can draw from every question evaluated so far - not just the most recent partial run."""
+    p = RESULTS_DIR / "per_question.jsonl"
+    cur = {}
+    if p.exists():
+        for l in p.read_text().splitlines():
+            if l.strip():
+                x = json.loads(l); cur[(x["system"], x["id"])] = x
+    stamp = time.strftime("%Y-%m-%dT%H:%M:%S")
+    for x in rows:
+        cur[(x["system"], x["id"])] = dict(x, run=stamp)
+    p.write_text("\n".join(json.dumps(x, default=str) for x in cur.values()) + "\n")
+
+
 def run_systems(r, gold, gen_llm, judge, names=None):
     """-> (rows, stop_message). On a long rate-limit (LLMQuotaError) it stops cleanly and returns what is finished."""
-    systems = {"naive_rag": NaiveRAG(r, gen_llm), "hybrid_rerank_rag": HybridRAG(r, gen_llm), "agent": Agent(r, gen_llm)}
+    systems = {"naive_rag": NaiveRAG(r, gen_llm), "dense_grounded_rag": DenseGroundedRAG(r, gen_llm), "hybrid_rerank_rag": HybridRAG(r, gen_llm),
+               "agent": Agent(r, gen_llm, get_control_llm())}
     systems = {k: v for k, v in systems.items() if not names or k in names}
     by_id = {c["id"]: c for c in r.chunks}
     per_q, stop = [], ""
@@ -57,7 +74,7 @@ def run_systems(r, gold, gen_llm, judge, names=None):
                           "llm_error": res.get("llm_error", ""), "trace": [f"{t['node']}: {t['summary'][:160]}" for t in res["trace"]],
                           "n_citations": len(res["citations"])})
             print(f"[eval] {name} {i}/{len(gold)} {g['id']:<8} {time.time() - t0:5.1f}s  correct={corr['score']} refused={res['refused']}", flush=True)
-            (RESULTS_DIR / "per_question.jsonl").write_text("\n".join(json.dumps(x, default=str) for x in per_q) + "\n")   # saved as we go
+            store_rows(per_q[-1:])                                                                                       # saved as we go
         if stop: break
         print(f"[eval] {name} done", flush=True)
     return per_q, stop
@@ -88,38 +105,43 @@ def summarize(per_q):
 
 
 def findings(S, per_q):
-    if not all(k in S for k in SYS_LABEL):
-        return ["(findings need all three systems - run without --systems)"]
-    a, h, n = S["agent"], S["hybrid_rerank_rag"], S["naive_rag"]
-    by = {s: {r["id"]: r for r in per_q if r["system"] == s} for s in SYS_LABEL}
+    if "agent" not in S or len(S) < 2:
+        return ["(findings need the agent and at least one baseline)"]
+    by = {s: {r["id"]: r for r in per_q if r["system"] == s} for s in S}
     ids = sorted(set.intersection(*[set(v) for v in by.values()]))
     ok = lambda s, i: by[s][i]["correct"] >= 0.5
+    typ = lambda i: by["agent"][i]["type"]
+    ans = [i for i in ids if typ(i) != "unanswerable"]
     p = lambda x: f"{100 * x:.0f}%"
-    out = [f"All comparisons below use the **{len(ids)} questions that every system completed**."]
-    for x, y, lx, ly in [("agent", "hybrid_rerank_rag", "agent", "hybrid+rerank"), ("agent", "naive_rag", "agent", "naive RAG"),
-                         ("hybrid_rerank_rag", "naive_rag", "hybrid+rerank", "naive RAG")]:
-        xo = sum(ok(x, i) and not ok(y, i) for i in ids); yo = sum(ok(y, i) and not ok(x, i) for i in ids)
-        pv = M.sign_test_p(xo, yo)
-        verdict = "a statistically detectable difference" if pv < 0.05 else "no statistically detectable difference"
-        out.append(f"Paired, {lx} vs {ly}: {lx} right & {ly} wrong on {xo} question(s); {ly} right & {lx} wrong on {yo} (exact sign test p={pv:.2f}) - {verdict}.")
-    for t, nice in [("multihop", "multi-hop / comparison"), ("numerical", "numerical"), ("single", "single-fact"),
-                    ("ambiguous", "tricky-wording"), ("unanswerable", "unanswerable (refusal)")]:
-        it = [i for i in ids if by["agent"][i]["type"] == t]
-        if not it:
-            out.append(f"**{nice}**: no questions of this type were completed by all systems yet."); continue
-        ka = sum(ok("agent", i) for i in it); kh = sum(ok("hybrid_rerank_rag", i) for i in it); nn = len(it)
-        d = ka - kh
-        tag = "within one question - noise" if abs(d) <= 1 else f"{'agent' if d > 0 else 'hybrid+rerank'} ahead by {abs(d)} question(s) - small sample, not tested on its own"
-        out.append(f"**{nice}** ({nn} questions): agent {ka}/{nn} vs hybrid+rerank {kh}/{nn} ({tag}).")
-    out.append(f"Cost of the agent: {a['avg_steps']:.1f} graph steps and {a['tokens']:.0f} tokens per query vs {h['tokens']:.0f} for hybrid+rerank "
-               f"({a['tokens'] / max(h['tokens'], 1):.1f}x); p95 latency {a['p95_ms']:.0f} ms vs {h['p95_ms']:.0f} ms (latency is distorted by caching/throttling).")
-    n_unans = sum(1 for i in ids if by["agent"][i]["type"] == "unanswerable")
-    if n_unans:
-        out.append(f"Refusal ({n_unans} unanswerable questions): naive RAG recall {p(n['refusal_recall'])}; hybrid+rerank recall {p(h['refusal_recall'])} at {p(h['refusal_precision'])} precision "
-                   f"({h['false_refusals']} false refusals); the agent recall {p(a['refusal_recall'])} at {p(a['refusal_precision'])} ({a['false_refusals']} false refusals).")
+    out = [f"All comparisons below use the **{len(ids)} questions that every system completed** ({len(ans)} answerable, {len(ids) - len(ans)} unanswerable)."]
+    pairs = [("agent", "hybrid_rerank_rag", "agent", "hybrid+rerank"),
+             ("hybrid_rerank_rag", "dense_grounded_rag", "hybrid+rerank", "dense+grounded prompt (isolates RETRIEVAL quality)"),
+             ("dense_grounded_rag", "naive_rag", "dense+grounded prompt", "naive RAG (isolates the grounded/refusing PROMPT)"),
+             ("agent", "naive_rag", "agent", "naive RAG")]
+    for x, y, lx, ly in pairs:
+        if x not in by or y not in by: continue
+        for label, pool in (("all questions", ids), ("answerable questions only", ans)):
+            if not pool: continue
+            xo = sum(ok(x, i) and not ok(y, i) for i in pool); yo = sum(ok(y, i) and not ok(x, i) for i in pool)
+            pv = M.sign_test_p(xo, yo)
+            verdict = "a statistically detectable difference" if pv < 0.05 else "no statistically detectable difference"
+            out.append(f"Paired, {lx} vs {ly}, {label} ({len(pool)}): {lx} right & {ly.split(' (')[0]} wrong on {xo}; the reverse on {yo} (exact sign test p={pv:.2f}) - {verdict}.")
+    if "hybrid_rerank_rag" in S:
+        for t, nice in [("multihop", "multi-hop / comparison"), ("numerical", "numerical"), ("single", "single-fact"), ("ambiguous", "tricky-wording"),
+                        ("unanswerable", "unanswerable (refusal)")]:
+            it = [i for i in ids if typ(i) == t]
+            if not it:
+                out.append(f"**{nice}**: no questions of this type completed by all systems yet."); continue
+            ka = sum(ok("agent", i) for i in it); kh = sum(ok("hybrid_rerank_rag", i) for i in it); nn = len(it); d = ka - kh
+            tag = "within one question - noise" if abs(d) <= 1 else f"{'agent' if d > 0 else 'hybrid+rerank'} ahead by {abs(d)} question(s) - small sample, not tested on its own"
+            out.append(f"**{nice}** ({nn} questions): agent {ka}/{nn} vs hybrid+rerank {kh}/{nn} ({tag}).")
+        a, h = S["agent"], S["hybrid_rerank_rag"]
+        out.append(f"Cost of the agent: {a['avg_steps']:.1f} graph steps and {a['tokens']:.0f} tokens per query vs {h['tokens']:.0f} for hybrid+rerank "
+                   f"({a['tokens'] / max(h['tokens'], 1):.1f}x); p95 latency {a['p95_ms']:.0f} ms vs {h['p95_ms']:.0f} ms (distorted by caching/throttling - see scripts/latency_bench.py).")
+    if any(typ(i) == "unanswerable" for i in ids):
+        out.append("Refusal on unanswerable questions: " + "; ".join(f"{SYS_LABEL[s].split(' (')[0]} recall {p(S[s]['refusal_recall'])} / precision {p(S[s]['refusal_precision'])} ({S[s]['false_refusals']} false refusals)" for s in S) + ".")
     else:
-        out.append(f"No unanswerable questions in this subset, so refusal precision/recall are n/a. False refusals of answerable questions: naive {n['false_refusals']}, "
-                   f"hybrid+rerank {h['false_refusals']}, agent {a['false_refusals']}.")
+        out.append("No unanswerable questions in this subset, so refusal precision/recall are n/a. False refusals of answerable questions: " + ", ".join(f"{SYS_LABEL[s].split(' (')[0]} {S[s]['false_refusals']}" for s in S) + ".")
     return out
 
 
@@ -131,7 +153,7 @@ def tables(abl, n_ans, S, per_q, meta, gold_n):
                  "graph, metrics and refusal logic work end to end, but it is **not evidence of answer quality**: the single-shot baselines can only extract "
                  "sentences (they cannot compare or do arithmetic) and the agent's rules were written by the same author as the question templates. "
                  "Re-run with `LLM_PROVIDER=groq JUDGE_PROVIDER=hf make eval` on your real corpus and hand-written golden set for numbers you can quote.\n")
-    L.append(f"*{gold_n} golden questions ({n_ans} answerable). Generator: `{meta['gen']}`; judge: `{meta['judge']}`; retrieval: `{meta['retrieval']}`; "
+    L.append(f"*{gold_n} questions in this generation evaluation (the retrieval ablation uses all {n_ans} answerable golden questions). Generator: `{meta['gen']}`; judge: `{meta['judge']}`; retrieval: `{meta['retrieval']}`; "
              f"graph engine: `{ENGINE}`.*\n")
     L.append("### Retrieval ablation (answerable questions, page-level gold)\n")
     L.append("| Retriever | Hit@1 | Hit@3 | Hit@5 | Recall@3 | Recall@5 | MRR |\n|---|---|---|---|---|---|---|")
@@ -208,6 +230,17 @@ def update_readme(md: str):
     p.write_text(s)
 
 
+def stratify(gold, quota: dict, seed: int = 1):
+    """Up to quota[type] questions of each type, seeded and deterministic."""
+    import random
+    pick = []
+    for t, n_t in quota.items():
+        pool = [g for g in gold if g["type"] == t]
+        random.Random(seed).shuffle(pool)
+        pick += pool[:n_t]
+    return sorted(pick, key=lambda g: g["id"])
+
+
 def spread(gold, n):
     """n questions spread evenly over the whole (type-interleaved) set, deterministic."""
     if not n or n >= len(gold): return gold
@@ -220,6 +253,8 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--retrieval-only", action="store_true", help="only the retrieval ablation (no LLM calls at all)")
     ap.add_argument("--systems", default="", help="comma list of: naive_rag,hybrid_rerank_rag,agent (default: all)")
+    ap.add_argument("--stratified", default="", help="per-type quotas, e.g. single=12,multihop=12,numerical=10,ambiguous=6,unanswerable=6 (seeded, deterministic)")
+    ap.add_argument("--publish", action="store_true", help="write results/results.md and refresh the README table even for a sampled run (header says it is a sample)")
     ap.add_argument("--types", default="", help="comma list of question types to evaluate (single,multihop,numerical,unanswerable,ambiguous)")
     ap.add_argument("--exclude", default="", help="comma list of question ids to leave out (e.g. the ones used while debugging)")
     ap.add_argument("--limit", type=int, default=0, help="evaluate only N questions spread across the set (saves free-tier quota)")
@@ -241,7 +276,13 @@ def main():
     if a.exclude:
         skip = {s.strip() for s in a.exclude.split(",") if s.strip()}
         gold = [g for g in gold if g["id"] not in skip]
-    gold = spread(gold, a.limit)
+    if a.stratified:
+        import random
+        quota = {k.strip(): int(v) for k, v in (kv.split("=") for kv in a.stratified.split(",") if "=" in kv)}
+        gold = stratify(gold, quota)
+        print(f"[eval] stratified sample: {len(gold)} questions {dict((t, sum(g['type'] == t for g in gold)) for t in quota)}")
+    else:
+        gold = spread(gold, a.limit)
     names = [s.strip() for s in a.systems.split(",") if s.strip()]
     gen, jud = get_llm(), get_llm(JUDGE_PROVIDER, JUDGE_MODEL)
     if not gen.offline and gen.name == jud.name:
@@ -255,9 +296,9 @@ def main():
     if len(common) < len(gold): stop = stop or f"{len(common)} of {len(gold)} requested questions were completed by every system; the table uses only those."
     S = summarize(per_q)
     meta = {"gen": gen.name, "judge": jud.name + (" (rule-based)" if jud.offline else ""), "retrieval": ret_meta}
-    partial = bool(a.limit or names or stop)
+    partial = bool(stop) or (not a.publish and bool(a.limit or names or a.types or a.stratified))
     (RESULTS_DIR / ("results_partial.json" if partial else "results.json")).write_text(json.dumps({"meta": meta, "retrieval_ablation": abl, "systems": S, "n_questions": len(gold)}, indent=1))
-    (RESULTS_DIR / "per_question.jsonl").write_text("\n".join(json.dumps(x, default=str) for x in per_all) + "\n")
+    store_rows(per_all)
     md = tables(abl, n_ans, S, per_q, meta, len(gold))
     if stop: md = f"> **Run stopped early - results below cover only the questions finished.** {stop}\n\n" + md
     (RESULTS_DIR / ("results_partial.md" if partial else "results.md")).write_text(md + "\n")

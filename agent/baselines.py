@@ -63,14 +63,15 @@ class NaiveRAG(_Base):
 
 class HybridRAG(_Base):
     system = "hybrid_rerank_rag"
+    MODE = "hybrid_rerank"
     K = 5
     COVER_MIN = 0.45   # fixed a-priori heuristic for the offline backend (chosen from the coverage distribution; see README)
 
     def run(self, q: str) -> dict:
         t0 = time.perf_counter()
-        hits = self.r.search(q, "hybrid_rerank", k=self.K)
+        hits = self.r.search(q, self.MODE, k=self.K)
         passages = [h.chunk for h in hits]
-        trace = [{"step": 1, "node": "retrieve", "summary": f"hybrid + rerank top-{self.K}", "ms": 0, "tokens": 0, "data": {"hits": [c["id"] for c in passages]}}]
+        trace = [{"step": 1, "node": "retrieve", "summary": f"{self.MODE} top-{self.K}", "ms": 0, "tokens": 0, "data": {"hits": [c["id"] for c in passages]}}]
         prompt = P.format_passages(passages)
         tokens = approx_tokens(P.ANSWER_SYSTEM + q + prompt); degraded = False
         qt = tokenize(q)
@@ -101,3 +102,10 @@ class HybridRAG(_Base):
         tokens += approx_tokens(text)
         trace.append({"step": 2, "node": "answer", "summary": "grounded answer" + (" (refused)" if refused else ""), "ms": 0, "tokens": tokens, "data": {"coverage": round(best_cov, 2)}})
         return self._finish(q, t0, H.strip_cites(text) if not refused else text, refused, passages, cites, tokens, trace, degraded)
+
+
+class DenseGroundedRAG(HybridRAG):
+    """Same grounded + citing + refusing prompt and the same K as HybridRAG, but dense-only retrieval. Comparing it with HybridRAG isolates the
+    value of hybrid+rerank retrieval; comparing it with NaiveRAG isolates the value of the grounded/refusing prompt (so naive RAG is not a strawman)."""
+    system = "dense_grounded_rag"
+    MODE = "dense"

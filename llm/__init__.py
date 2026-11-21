@@ -1,5 +1,5 @@
 from __future__ import annotations
-from config import LLM_PROVIDER, LLM_MODEL
+from config import LLM_PROVIDER, LLM_MODEL, LLM_CONTROL_MODEL
 from .base import LLM, LLMError, LLMResult, OfflineLLM
 
 
@@ -16,3 +16,11 @@ def get_llm(provider: str | None = None, model: str | None = None) -> LLM:
     except LLMError as e:
         print(f"[llm] {provider} unavailable ({e}); falling back to offline rule-based backend")
         return OfflineLLM()
+
+
+def get_control_llm():
+    """Cheaper model for the agent's control steps, or None (= use the main model). Set LLM_CONTROL_MODEL, e.g. openai/gpt-oss-20b."""
+    if not LLM_CONTROL_MODEL or LLM_PROVIDER.lower() == "offline":
+        return None
+    llm = get_llm(LLM_PROVIDER, LLM_CONTROL_MODEL)
+    return None if llm.offline else llm

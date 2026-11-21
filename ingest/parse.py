@@ -35,6 +35,28 @@ GAP = 14.0  # points of horizontal whitespace that mark a new table cell
 MARKER = re.compile(r"^(\(?[0-9A-Za-z]{1,5}[.)]|\d+(\.\d+)+\.?)$")
 
 
+def merge_marker_lines(items: list) -> list:
+    """items: [(y, x0, Line)]. A marker-only line such as '(4)' and the text line at the same height to its right are ONE paragraph line
+    ('(4) The tenure ...'). PyMuPDF returns them as separate lines when the hanging indent is wide; pdfplumber as one line with a gap."""
+    used, out = set(), []
+    for i, (y, x, l) in enumerate(items):
+        if i in used:
+            continue
+        if MARKER.match(l.text.strip()):
+            best = None
+            for j, (y2, x2, l2) in enumerate(items):
+                if j != i and j not in used and abs(y2 - y) < 4 and x2 > x and not MARKER.match(l2.text.strip()):
+                    if best is None or x2 < items[best][1]:
+                        best = j
+            if best is not None:
+                used.add(best)
+                l2 = items[best][2]
+                out.append((y, x, Line(l.text.strip() + " " + l2.text, l2.size, l2.bold or l.bold, l.page)))
+                continue
+        out.append((y, x, l))
+    return out
+
+
 def _gap_sep(so_far: str) -> str:
     """Separator to use for a big horizontal gap: a space after a paragraph marker, ' | ' (table cell) otherwise."""
     return " " if MARKER.match(so_far.strip()) else " | "
@@ -45,43 +67,27 @@ def _lines_fitz(path: str) -> dict[int, list[Line]]:
     out: dict[int, list[Line]] = {}
     with fitz.open(path) as pdf:
         for pno, page in enumerate(pdf, start=1):
-            raw = []
+            lines = []
             for block in page.get_text("dict")["blocks"]:
                 for ln in block.get("lines", []):
-                    text, sizes, bold = "", [], False
+                    text, last_x1, sizes, bold = "", None, [], False
                     for sp in ln["spans"]:
                         t = sp["text"]
                         if not t.strip():
                             continue
-                        text += t
+                        x0, x1 = sp["bbox"][0], sp["bbox"][2]
+                        if last_x1 is not None and x0 - last_x1 > GAP:
+                            text = text.rstrip() + _gap_sep(text) + t.strip()
+                        else:
+                            text += t
+                        last_x1 = x1
                         sizes.append(sp["size"])
                         bold = bold or bool(sp["flags"] & 16) or "bold" in sp["font"].lower()
                     text = text.strip()
                     if text:
-                        x0 = min(sp["bbox"][0] for sp in ln["spans"] if sp["text"].strip())
-                        x1 = max(sp["bbox"][2] for sp in ln["spans"] if sp["text"].strip())
-                        raw.append((ln["bbox"][1], x0, x1, text, max(sizes), bold))
-
-            # Table cells are often separate PDF blocks. Reassemble text lines
-            # sharing a baseline so their horizontal separation can identify cells.
-            rows: dict[int, list[tuple]] = {}
-            for item in raw:
-                rows.setdefault(round(item[0] / 2), []).append(item)
-            lines = []
-            for key in sorted(rows):
-                parts, last_x1, sizes, bold, top = "", None, [], False, None
-                for y, x0, x1, text, size, is_bold in sorted(rows[key], key=lambda item: item[1]):
-                    if last_x1 is not None and x0 - last_x1 > GAP:
-                        parts = parts.rstrip() + _gap_sep(parts) + text
-                    else:
-                        parts += (" " if parts and x0 > last_x1 else "") + text
-                    last_x1 = x1
-                    top = y if top is None else min(top, y)
-                    sizes.append(size)
-                    bold = bold or is_bold
-                if parts.strip():
-                    lines.append((top, Line(parts.strip(), max(sizes), bold, pno)))
-            out[pno] = [line for _, line in sorted(lines, key=lambda item: item[0])]
+                        lines.append((ln["bbox"][1], ln["bbox"][0], Line(text, max(sizes), bold, pno)))
+            lines = merge_marker_lines(sorted(lines, key=lambda x: (x[0], x[1])))
+            out[pno] = [l for _, _, l in sorted(lines, key=lambda x: (x[0], x[1]))]
     return out
 
 

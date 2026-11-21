@@ -13,9 +13,18 @@ on a hand-checked golden set.
 * **Models:** bge-small embeddings, BM25, RRF fusion, MiniLM cross-encoder rerank, ChromaDB, LangGraph; generator and judge are two different
   free Groq models (`openai/gpt-oss-120b`, `openai/gpt-oss-20b`). Everything runs offline too (dependency-free fallbacks).
 
-> **Honest status.** The code, tests and golden set are complete. The numbers in the Results section are produced by `make eval` on *your*
-> machine with your API quota - none are hard-coded here. The "development snapshot" below is from earlier runs *before* the final fixes and is
-> labelled as such. Judge-vs-human agreement is **not measured until you hand-grade 20 answers** (`make hand-grade`).
+> **Honest status.** The code, tests and golden set are complete, but **there is no final generation result yet**: the free-tier quota (200k tokens/day)
+> stopped earlier runs, and the last partial run happened to cover only unanswerable questions (the easiest case: 100 % just means "refused every time").
+> The README's results block therefore stays a placeholder until you run the sampled evaluation below. Earlier development runs *did* include answerable
+> questions, but they predate the final fixes and their cache is invalid. Judge-vs-human agreement is **not measured until you hand-grade** (`make hand-grade`).
+
+## What is compared (four systems, so no baseline is a strawman)
+| System | Retrieval | Prompt | Isolates |
+|---|---|---|---|
+| Naive RAG | dense top-3 | plain "answer from the context" (no refusal, no citations) | the starting point |
+| Dense + grounded | dense top-5 | grounded + cites + may refuse | **value of the prompt** (vs naive) |
+| Hybrid + rerank + grounded | hybrid, RRF, cross-encoder top-5 | same grounded prompt | **value of retrieval** (vs dense + grounded) |
+| Full agent | hybrid + rerank, per-document search, retries | plan / grade / rewrite / tools / verify | **value of the agent loop** (vs hybrid + grounded) |
 
 ## Architecture
 ```
@@ -49,20 +58,20 @@ python -m streamlit run ui\app.py                  # UI (after setting the LLM i
 ```
 Copy `.env.example` to `.env` and put your Groq key in it (create one at console.groq.com -> API Keys; never commit it).
 
-### Run the final evaluation (free-tier quota planning)
-The free allowance for `gpt-oss-120b` is ~200,000 tokens/day; measured cost is ~0.9k (naive), ~1.4k (hybrid) and ~4-6k (agent) tokens per question,
-so the full 84 unseen questions need roughly **4 days of quota**. Every response is cached, so a run simply resumes where it stopped, and a
-rate-limit wait over 90 s aborts cleanly (`STOPPED at ...`) with partial results saved. **All earlier cached answers are invalid after the final
-code changes - budget for a full re-run.** Suggested order:
+### Run the evaluation (stratified sample, ~2-3 days of free-tier quota)
+Running everything is not necessary or affordable on the free tier (agent ~4-6k tokens/question, 200k tokens/day for `gpt-oss-120b`). Instead evaluate a
+**seeded, stratified sample**: 12 single-fact, 12 multi-hop, 10 numerical, 6 tricky-wording **answerable** questions plus 6 unanswerable ones, all four systems,
+with the eight debugging questions left out (`DEV_IDS` in the Makefile). Estimated cost ~420k tokens on one model; ~240k on the main model if you set
+`LLM_CONTROL_MODEL=openai/gpt-oss-20b` (the agent's plan/grade/rewrite/verify steps then use the second model's quota). Every response is cached, so a rate-limit
+stop (`STOPPED at ...`) just means "run the same command tomorrow".
 ```powershell
-python -m eval.run_eval --types unanswerable --exclude r1_001,r1_020,r2_013,r2_033,r3_022,r4_004,r1_024,r1_027   # ~110k tokens
-python -m eval.run_eval --types multihop,numerical --exclude ...same...                                            # ~1.5 days
-python -m eval.run_eval --types single,ambiguous   --exclude ...same...                                            # ~2 days
-python -m eval.run_eval --exclude ...same...          # everything cached -> writes results/results.md and refreshes the table below
-python -m eval.hand_grade sample ; (label results\hand_grade.csv: 1/0) ; python -m eval.hand_grade agree
+python -m eval.run_eval --stratified single=12,multihop=12,numerical=10,ambiguous=6,unanswerable=6 --exclude r1_001,r1_020,r2_013,r2_033,r3_022,r4_004,r1_024,r1_027 --publish
+python -m eval.hand_grade sample          # 20 answers, 16 answerable, agent + baseline mixed; the judge's score is hidden in hand_grade_key.csv
+#  ... fill the `human` column of results\hand_grade.csv (1/0), then:
+python -m eval.hand_grade agree           # agreement + kappa overall / answerable / unanswerable, and whether the judge is lenient or strict
+python scripts\latency_bench.py 8         # COLD, unthrottled latency (spends ~100k tokens); quote these, not the table's latency rows
 ```
-Partial runs write `results_partial.*` and never touch this README. The eight `--exclude` ids are the questions used while debugging the agent;
-report them separately if you include them.
+`results/per_question.jsonl` accumulates across runs, so partial runs never erase earlier ones. Without `--publish`, sampled runs write `results_partial.*` and leave this README alone.
 
 ## Results
 <!-- RESULTS:START -->
@@ -81,7 +90,7 @@ report them separately if you include them.
 * Reranking is the clearest retrieval win (real stack, pre-chunk-fix: hybrid+rerank Hit@5 98.7%, MRR 0.84 vs dense-only 91.0% / 0.71).
 * Grounded answering with refusal is the clearest end-to-end win over naive RAG: 14/14 unanswerable questions refused vs 0/14.
 * The agent loop: 25/30 vs 21/30 for single-shot hybrid+rerank on the multi-hop + numerical questions (paired sign test p = 0.22, i.e. *not* established),
-  at ~3.7x the tokens. Several of its failures were pipeline bugs, fixed afterwards (below) - so re-measure.
+  at ~3.7x the tokens. Several of its failures were pipeline bugs, fixed afterwards (below) - so re-measure. These runs predate the dense-grounded baseline, so they could not separate prompting from retrieval.
 
 ## Engineering log: bugs the evaluation exposed (each now has a regression test)
 | Symptom | Root cause | Fix |
@@ -103,7 +112,8 @@ report them separately if you include them.
 * The facts table / lookup tool needs "label | value" tables; it is unused for RBI directions (kept for the synthetic demo). The calculator is driven by the LLM.
 * Same-family judge; hand-graded agreement (n=20) is a rough check, not proof.
 * Retrieval is page-level; multi-paragraph answers that span chunks can still be missed (see `make diagnose`).
-* The free tier limits how often you can re-run the agent; token use per agent question is ~4x a single-shot answer.
+* The free tier limits how often you can re-run the agent; token use per agent question is ~4x a single-shot answer. Retries now never re-issue a query that was already tried and stop when a retry adds no new evidence, but the cost per answered question is still several times a single-shot answer.
+* The evaluation is a stratified **sample** (about 46 questions), not all 92: intervals are wide and per-type cells are small, so report counts, intervals and paired tests, not single percentages.
 * The offline rule-based backend and the synthetic corpus (`make demo`, `data/demo_*`) only demonstrate the machinery; the rules were written by the same author as the demo questions.
 * RBI documents are public, but check the RBI website terms before redistributing the PDFs or hosting a public demo.
 
